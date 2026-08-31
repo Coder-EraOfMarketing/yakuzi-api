@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { QueryAdminReviewsDto, QuerySellerReviewsDto } from './dto/query-reviews.dto';
 
 @Injectable()
 export class ReviewsService {
@@ -203,18 +204,77 @@ export class ReviewsService {
   /**
    * Get all reviews for admin dashboard.
    */
-  async getAdminReviews(page: number = 1, limit: number = 20) {
+  /**
+   * Shared filter builder for the admin review list.
+   *
+   * A catalog product can be sold by several sellers, so seller scoping goes
+   * through the REVIEW'S OWN sellerOffer (the listing actually purchased) —
+   * never "products this seller also sells", which would attribute a rival's
+   * review to them.
+   */
+  private buildReviewWhere(q: {
+    sellerId?: string;
+    productId?: string;
+    userId?: string;
+    categoryId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    rating?: number;
+    search?: string;
+  }): Record<string, unknown> {
+    const where: Record<string, unknown> = {};
+    if (q.productId) where.catalogProductId = q.productId;
+    if (q.userId) where.userId = q.userId;
+    if (q.rating) where.rating = q.rating;
+    if (q.sellerId) where.sellerOffer = { sellerId: q.sellerId };
+    if (q.categoryId) {
+      where.catalogProduct = {
+        OR: [
+          { categoryId: q.categoryId },
+          { extraCategories: { some: { id: q.categoryId } } },
+        ],
+      };
+    }
+    if (q.dateFrom || q.dateTo) {
+      const createdAt: Record<string, Date> = {};
+      if (q.dateFrom) createdAt.gte = new Date(q.dateFrom);
+      if (q.dateTo) {
+        // Inclusive end-of-day so "to 5 Sep" includes the 5th.
+        const to = new Date(q.dateTo);
+        to.setHours(23, 59, 59, 999);
+        createdAt.lte = to;
+      }
+      where.createdAt = createdAt;
+    }
+    if (q.search?.trim()) {
+      const search = q.search.trim();
+      where.OR = [
+        { comment: { contains: search, mode: 'insensitive' } },
+        { catalogProduct: { name: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
+    return where;
+  }
+
+  async getAdminReviews(query: QueryAdminReviewsDto = {}) {
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
     try {
       if ((this.prisma as any).review) {
-        const skip = (page - 1) * limit;
-
+        const where = this.buildReviewWhere(query);
         const [reviews, total] = await Promise.all([
           (this.prisma as any).review.findMany({
-            skip,
+            where,
+            skip: (page - 1) * limit,
             take: limit,
             orderBy: { createdAt: 'desc' },
             include: {
-              catalogProduct: { select: { name: true } },
+              catalogProduct: {
+                select: { name: true, category: { select: { id: true, name: true } } },
+              },
+              sellerOffer: {
+                select: { sellerId: true, seller: { select: { companyName: true } } },
+              },
               user: {
                 select: {
                   id: true,
@@ -224,7 +284,7 @@ export class ReviewsService {
               },
             },
           }),
-          (this.prisma as any).review.count(),
+          (this.prisma as any).review.count({ where }),
         ]);
 
         return {
@@ -232,6 +292,10 @@ export class ReviewsService {
             id: r.id,
             catalogProductId: r.catalogProductId,
             productName: r.catalogProduct?.name || 'Unknown Product',
+            categoryId: r.catalogProduct?.category?.id ?? null,
+            categoryName: r.catalogProduct?.category?.name ?? null,
+            sellerId: r.sellerOffer?.sellerId ?? null,
+            sellerName: r.sellerOffer?.seller?.companyName ?? null,
             userId: r.userId,
             userName: r.user.buyerProfile?.legalName || r.user.email || 'User',
             rating: r.rating,
@@ -251,6 +315,69 @@ export class ReviewsService {
     return { data: [], total: 0, page, limit, totalPages: 0 };
   }
 
+  /**
+   * Reviews for ONE seller's own listings.
+   *
+   * Scoped by the purchased listing's sellerId, so a seller sees only reviews
+   * left by buyers who bought from THEM — never another seller's reviews of
+   * the same catalog product. Buyer identity is deliberately omitted from the
+   * response (sellers filter by product/category/date, never by customer).
+   */
+  async getSellerReviews(userId: string, query: QuerySellerReviewsDto = {}) {
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+
+    const seller = await this.prisma.sellerProfile.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!seller) throw new NotFoundException('Seller profile not found');
+
+    const where = this.buildReviewWhere({ ...query, sellerId: seller.id });
+
+    const [reviews, total, agg] = await Promise.all([
+      (this.prisma as any).review.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          catalogProduct: {
+            select: { id: true, name: true, category: { select: { id: true, name: true } } },
+          },
+        },
+      }),
+      (this.prisma as any).review.count({ where }),
+      (this.prisma as any).review.aggregate({
+        where: { sellerOffer: { sellerId: seller.id } },
+        _avg: { rating: true },
+        _count: true,
+      }),
+    ]);
+
+    return {
+      data: reviews.map((r: any) => ({
+        id: r.id,
+        catalogProductId: r.catalogProductId,
+        productName: r.catalogProduct?.name || 'Unknown Product',
+        categoryId: r.catalogProduct?.category?.id ?? null,
+        categoryName: r.catalogProduct?.category?.name ?? null,
+        rating: r.rating,
+        comment: r.comment || '',
+        images: r.images || [],
+        createdAt: r.createdAt.toISOString(),
+        // No buyer identity by design.
+      })),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      summary: {
+        average: agg._avg.rating ? Math.round(agg._avg.rating * 10) / 10 : null,
+        count: typeof agg._count === 'number' ? agg._count : 0,
+      },
+    };
+  }
 
   /**
    * Delete a review (Admin).

@@ -6,6 +6,7 @@ import {
   Body,
   Param,
   ParseUUIDPipe,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -16,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { ReviewsService } from './reviews.service';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { QueryAdminReviewsDto, QuerySellerReviewsDto } from './dto/query-reviews.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -64,8 +66,20 @@ export class ReviewsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get all reviews (admin)' })
   @ApiResponse({ status: 200, description: 'All reviews returned' })
-  getAdminReviews() {
-    return this.reviewsService.getAdminReviews();
+  getAdminReviews(@Query() query: QueryAdminReviewsDto) {
+    return this.reviewsService.getAdminReviews(query);
+  }
+
+  @Get('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SELLER)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: "Reviews for the signed-in seller's own listings" })
+  getSellerReviews(
+    @CurrentUser('id') userId: string,
+    @Query() query: QuerySellerReviewsDto,
+  ) {
+    return this.reviewsService.getSellerReviews(userId, query);
   }
 
   @Delete('admin/:id')
