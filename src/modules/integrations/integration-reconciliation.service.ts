@@ -76,7 +76,7 @@ export class IntegrationReconciliationService {
       },
       orderBy: { lastSuccessfulSyncAt: { sort: 'asc', nulls: 'first' } },
       take: IntegrationReconciliationService.MAX_PER_TICK,
-      select: { id: true, sellerId: true },
+      select: { id: true, sellerId: true, syncOrders: true },
     });
 
     let queued = 0;
@@ -100,6 +100,20 @@ export class IntegrationReconciliationService {
         },
       });
       queued += 1;
+
+      // Order import rides the same sweep. It is the only scheduler orders
+      // have: there is no order webhook path, and polling from the UI would
+      // burn Amazon's very low getOrders rate limit.
+      if (integration.syncOrders) {
+        await this.prisma.integrationSyncJob.create({
+          data: {
+            sellerId: integration.sellerId,
+            integrationId: integration.id,
+            jobType: SyncJobType.ORDER_IMPORT,
+            runAfter: new Date(Date.now() + 30_000),
+          },
+        });
+      }
     }
 
     return { queued };

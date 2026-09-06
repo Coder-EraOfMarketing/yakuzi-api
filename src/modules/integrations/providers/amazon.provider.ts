@@ -6,7 +6,35 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
-import { ExternalProductPage } from './external-product.types';
+import {
+  ExternalOrderPage,
+  ExternalProductPage,
+} from './external-product.types';
+
+/** Only the order fields this integration reads — never buyer information. */
+interface AmazonOrdersResponse {
+  payload?: {
+    Orders?: Array<{
+      AmazonOrderId?: string;
+      PurchaseDate?: string;
+      LastUpdateDate?: string;
+      OrderStatus?: string;
+      OrderTotal?: { CurrencyCode?: string; Amount?: string };
+    }>;
+    NextToken?: string;
+  };
+}
+
+interface AmazonOrderItemsResponse {
+  payload?: {
+    OrderItems?: Array<{
+      SellerSKU?: string;
+      Title?: string;
+      QuantityOrdered?: number;
+      ItemPrice?: { Amount?: string };
+    }>;
+  };
+}
 
 /** Only the fields of the Listings Items payload this integration reads. */
 interface AmazonListingsResponse {
@@ -410,6 +438,109 @@ export class AmazonProvider {
     }
 
     return { products, nextCursor: data?.pagination?.nextToken ?? null };
+  }
+
+  /**
+   * One page of orders placed since `since`, with their line items.
+   *
+   * Two important constraints, both reflected in how this is called:
+   *
+   *  - `getOrders` is rate-limited to roughly one request per minute (burst
+   *    20), so order import runs on a schedule and never in a tight loop.
+   *  - Line items need a second call per order. Only the order's own totals
+   *    and its SKUs are read; buyer information would require a Restricted
+   *    Data Token, which Yukizi deliberately never requests.
+   */
+  async fetchOrdersPage(
+    credentials: AmazonCredentials,
+    since: Date,
+    cursor?: string | null,
+    maxOrders = 20,
+  ): Promise<ExternalOrderPage> {
+    const host = SP_API_HOSTS[credentials.region] ?? SP_API_HOSTS.na;
+    const accessToken = await this.getAccessToken(credentials.refreshToken);
+
+    const params: Record<string, string> = {
+      MarketplaceIds: credentials.marketplaceId,
+    };
+    if (cursor) params.NextToken = cursor;
+    else params.CreatedAfter = since.toISOString();
+
+    const { data } = await axios.get<AmazonOrdersResponse>(
+      `https://${host}/orders/v0/orders`,
+      {
+        headers: { 'x-amz-access-token': accessToken },
+        params,
+        timeout: 30_000,
+      },
+    );
+
+    const rawOrders = (data?.payload?.Orders ?? []).slice(0, maxOrders);
+    const orders: ExternalOrderPage['orders'] = [];
+
+    for (const order of rawOrders) {
+      const amazonOrderId = order.AmazonOrderId;
+      if (!amazonOrderId) continue;
+
+      const items = await this.fetchOrderItems(
+        host,
+        accessToken,
+        credentials.sellingPartnerId,
+        amazonOrderId,
+      );
+
+      orders.push({
+        externalOrderId: amazonOrderId,
+        orderNumber: amazonOrderId,
+        placedAt: order.PurchaseDate ? new Date(order.PurchaseDate) : new Date(),
+        status: order.OrderStatus ?? null,
+        financialStatus: null,
+        currency: order.OrderTotal?.CurrencyCode ?? null,
+        totalAmount: Number(order.OrderTotal?.Amount ?? 0),
+        cancelledAt:
+          order.OrderStatus === 'Canceled' && order.LastUpdateDate
+            ? new Date(order.LastUpdateDate)
+            : null,
+        items,
+      });
+
+      // getOrderItems allows ~0.5 requests/second sustained.
+      await this.delay(2_100);
+    }
+
+    return { orders, nextCursor: data?.payload?.NextToken ?? null };
+  }
+
+  /** Line items for one order. A failure here must not lose the order. */
+  private async fetchOrderItems(
+    host: string,
+    accessToken: string,
+    _sellingPartnerId: string,
+    amazonOrderId: string,
+  ): Promise<ExternalOrderPage['orders'][number]['items']> {
+    try {
+      const { data } = await axios.get<AmazonOrderItemsResponse>(
+        `https://${host}/orders/v0/orders/${encodeURIComponent(amazonOrderId)}/orderItems`,
+        {
+          headers: { 'x-amz-access-token': accessToken },
+          timeout: 25_000,
+        },
+      );
+
+      return (data?.payload?.OrderItems ?? []).map((item) => ({
+        sku: item.SellerSKU?.trim() || null,
+        title: item.Title ?? null,
+        quantity: Number(item.QuantityOrdered ?? 0),
+        price: Number(item.ItemPrice?.Amount ?? 0),
+      }));
+    } catch {
+      this.logger.warn(`Could not read items for Amazon order ${amazonOrderId}`);
+      return [];
+    }
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**

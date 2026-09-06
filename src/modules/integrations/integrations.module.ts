@@ -3,6 +3,7 @@ import { ProductsModule } from '../products/products.module';
 import { IntegrationEventsService } from './integration-events.service';
 import { IntegrationImportService } from './integration-import.service';
 import { IntegrationJobRunnerService } from './integration-job-runner.service';
+import { IntegrationOrdersService } from './integration-orders.service';
 import { IntegrationPushService } from './integration-push.service';
 import { IntegrationReconciliationService } from './integration-reconciliation.service';
 import { IntegrationWebhookRegistrationService } from './integration-webhook-registration.service';
@@ -36,6 +37,7 @@ import { AmazonProvider } from './providers/amazon.provider';
     IntegrationHealthService,
     IntegrationImportService,
     IntegrationJobRunnerService,
+    IntegrationOrdersService,
     IntegrationPushService,
     IntegrationEventsService,
     IntegrationReconciliationService,
@@ -45,6 +47,9 @@ import { AmazonProvider } from './providers/amazon.provider';
     WooCommerceProvider,
     AmazonProvider,
   ],
-  exports: [IntegrationsService],
+  // IntegrationEventsService is exported so OrdersService can tell connected
+  // channels when a Yukizi sale moves stock. Orders depends on Integrations,
+  // never the other way round, so there is no cycle.
+  exports: [IntegrationsService, IntegrationEventsService],
 })
 export class IntegrationsModule {}

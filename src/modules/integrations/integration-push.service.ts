@@ -8,6 +8,7 @@ import {
   IntegrationSyncDirection,
   InventoryEventStatus,
   InventoryEventType,
+  Prisma,
   SellerIntegration,
 } from '@prisma/client';
 import * as crypto from 'crypto';
@@ -287,6 +288,137 @@ export class IntegrationPushService {
           'This channel does not support inventory export.',
         );
     }
+  }
+
+  /**
+   * Pushes Yukizi prices to one channel.
+   *
+   * Only ever runs when the seller has switched price sync on for that
+   * connection — it is off by default, because getting this wrong changes what
+   * a live storefront charges.
+   *
+   * The price sent is `finalCustomerPayable`, the number a Yukizi buyer would
+   * actually pay. Sending `mrp` instead would undercut or inflate the channel
+   * depending on the seller's discount setup.
+   */
+  async pushPrices(
+    integration: SellerIntegration,
+    mappingIds: string[],
+  ): Promise<{ pushed: number; skipped: number }> {
+    if (!integration.syncPrices || mappingIds.length === 0) {
+      return { pushed: 0, skipped: mappingIds.length };
+    }
+
+    // Amazon price changes go through the Listings Items `purchasable_offer`
+    // structure, which carries currency, audience and date-ranged pricing.
+    // Getting that wrong mis-prices a live listing, so it is deliberately not
+    // attempted rather than half-implemented.
+    if (integration.provider === IntegrationProvider.AMAZON) {
+      return { pushed: 0, skipped: mappingIds.length };
+    }
+
+    const credentials = this.encryption.decrypt<Record<string, string>>(
+      integration.encryptedCredentials,
+    );
+    if (!credentials) {
+      throw new PermanentIntegrationError(
+        'This connection needs to be reauthorized before syncing.',
+      );
+    }
+
+    const mappings = await this.prisma.integrationProductMapping.findMany({
+      where: {
+        id: { in: mappingIds.slice(0, IntegrationPushService.MAX_WRITES_PER_RUN) },
+        integrationId: integration.id,
+        status: IntegrationMappingStatus.MAPPED,
+        sellerOfferId: { not: null },
+      },
+      include: {
+        sellerOffer: {
+          select: { finalCustomerPayable: true, mrp: true },
+        },
+      },
+    });
+
+    let pushed = 0;
+    let skipped = 0;
+
+    for (const [index, mapping] of mappings.entries()) {
+      const payable = mapping.sellerOffer?.finalCustomerPayable;
+      // No computed price means the listing has never been priced through the
+      // normal path; guessing from mrp would ignore GST and discounts.
+      if (payable === null || payable === undefined) {
+        skipped += 1;
+        continue;
+      }
+      const price = Number(payable);
+      if (!Number.isFinite(price) || price <= 0) {
+        skipped += 1;
+        continue;
+      }
+      if (mapping.externalPrice !== null && Number(mapping.externalPrice) === price) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        if (integration.provider === IntegrationProvider.SHOPIFY) {
+          if (!mapping.externalVariantId) {
+            skipped += 1;
+            continue;
+          }
+          await this.shopify.setVariantPrice(
+            integration.externalAccountId,
+            credentials.accessToken,
+            mapping.externalVariantId,
+            price,
+          );
+        } else {
+          await this.woocommerce.updatePrice(
+            integration.externalStoreUrl ?? '',
+            {
+              consumerKey: credentials.consumerKey,
+              consumerSecret: credentials.consumerSecret,
+            },
+            mapping.externalProductId,
+            mapping.externalVariantId || null,
+            price,
+          );
+        }
+
+        await this.prisma.integrationProductMapping.update({
+          where: { id: mapping.id },
+          data: {
+            externalPrice: new Prisma.Decimal(price),
+            externalPriceAt: new Date(),
+            lastSyncedAt: new Date(),
+            lastError: null,
+          },
+        });
+        pushed += 1;
+      } catch (error) {
+        if (this.isAuthFailure(error)) throw error;
+        await this.prisma.integrationProductMapping.update({
+          where: { id: mapping.id },
+          data: { lastError: this.sanitize(error) },
+        });
+        skipped += 1;
+      }
+
+      if (index < mappings.length - 1) {
+        await this.delay(IntegrationPushService.WRITE_DELAY_MS);
+      }
+    }
+
+    if (pushed > 0) {
+      await this.integrations.log(integration.sellerId, integration.id, {
+        action: 'PRICES_EXPORTED',
+        status: IntegrationLogStatus.SUCCESS,
+        message: `${pushed} price${pushed === 1 ? '' : 's'} sent to the channel.`,
+      });
+    }
+
+    return { pushed, skipped };
   }
 
   /**

@@ -85,6 +85,22 @@ export class UpdateIntegrationSettingsDto {
   syncInventory?: boolean;
 
   @ApiPropertyOptional({
+    description:
+      'Import channel orders for visibility. Never creates Yukizi orders and never moves stock.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  syncOrders?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Send Yukizi prices to the channel. Off by default — it changes what a live storefront charges.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  syncPrices?: boolean;
+
+  @ApiPropertyOptional({
     enum: IntegrationSyncDirection,
     description:
       'TWO_WAY is only accepted for providers with loop protection enabled.',

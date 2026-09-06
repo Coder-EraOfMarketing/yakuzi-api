@@ -45,6 +45,8 @@ const build = (
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
   );
   return { service, prisma };
 };
@@ -154,6 +156,8 @@ describe('OrdersService.pushOrderToShiprocketIfNeeded', () => {
     const service = new OrdersService(
       {} as never,
       shiprocketService as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -283,6 +287,8 @@ describe('OrdersService.syncTrackingFields', () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
   );
     return { service, prisma };
   };
@@ -319,6 +325,8 @@ describe('OrdersService.syncTrackingFields', () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
   );
     await expect(
       service.syncTrackingFields('order-1', { awb_code: 'AWB1' }),
@@ -344,6 +352,8 @@ describe('OrdersService.notifyBuyerOfStatusChange', () => {
       mailService as never,
       notificationsService as never,
       otpSmsService as never,
+      {} as never,
+      {} as never,
       {} as never,
     );
     return { service, mailService, notificationsService, otpSmsService };
@@ -426,6 +436,8 @@ describe('OrdersService.createSettlementsForDeliveredOrder', () => {
     };
     const service = new OrdersService(
       prisma as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -560,6 +572,8 @@ describe('OrdersService.checkout — price integrity', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     return { service, prisma, tx, txOrderItemCreateManyCalls };
   };
@@ -651,6 +665,8 @@ describe('OrdersService.updateShippingDetails — auto-accept + Shiprocket push'
       prisma as never,
       {} as never,
       mailService as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -804,6 +820,8 @@ describe('OrdersService.updateAdminShippingDocs', () => {
       {} as never,
       {} as never,
       sellerOrderNotifier as never,
+      {} as never,
+      {} as never,
     );
     return { service, prisma, sellerOrderNotifier };
   };
@@ -900,6 +918,8 @@ describe('OrdersService.cancelOrder', () => {
     };
     const service = new OrdersService(
       prisma as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -1027,6 +1047,8 @@ describe('OrdersService.checkout — fulfillmentMode snapshot', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     return { service, orderCreateCalls };
   };
@@ -1057,6 +1079,8 @@ describe('OrdersService self-ship guards on the Shiprocket flow', () => {
     new OrdersService(
       prisma as never,
       shiprocket as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -1143,6 +1167,8 @@ describe('OrdersService.syncTrackingFields — track_url', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
 
     await service.syncTrackingFields('order-1', {
@@ -1188,6 +1214,8 @@ describe('OrdersService.submitSelfShipTracking', () => {
     };
     const service = new OrdersService(
       prisma as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -1325,6 +1353,8 @@ describe('OrdersService.submitSelfShipTracking — admin email', () => {
       prisma as never,
       {} as never,
       mailService as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
