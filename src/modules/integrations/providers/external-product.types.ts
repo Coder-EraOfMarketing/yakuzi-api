@@ -24,8 +24,13 @@ export interface ExternalProduct {
   fulfillmentChannel: 'MERCHANT' | 'AMAZON_FBA';
   /** Amazon only. */
   asin?: string | null;
-  /** Provider-specific ids a later phase needs (e.g. Shopify inventory item). */
-  extra?: Record<string, string>;
+  /**
+   * Provider-specific handle needed to WRITE a quantity back:
+   * Shopify's inventory_item_id. Null when the channel does not need one.
+   */
+  inventoryRef?: string | null;
+  /** Amazon only: productType, required by the Listings Items PATCH. */
+  productType?: string | null;
 }
 
 /** One page of a channel catalogue plus the cursor to continue from. */

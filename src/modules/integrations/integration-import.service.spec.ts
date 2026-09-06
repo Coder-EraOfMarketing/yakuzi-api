@@ -41,7 +41,8 @@ const build = () => {
         state.mappings.push(row);
         return row;
       }),
-      findMany: jest.fn(async () => state.mappings),
+      // Typed with its argument so assertions can read back the where clause.
+      findMany: jest.fn(async (_args?: any) => state.mappings),
       findFirst: jest.fn(),
       update: jest.fn(async ({ where, data }: any) => {
         const row = state.mappings.find((m) => m.id === where.id);

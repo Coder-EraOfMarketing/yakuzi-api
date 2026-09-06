@@ -59,12 +59,28 @@ const build = () => {
       .mockResolvedValue({ applied: 1, conflicts: 0, skipped: 0 }),
   };
 
+  const pushService = {
+    pushQuantities: jest.fn().mockResolvedValue({ pushed: 0, skipped: 0 }),
+  };
+  const webhookRegistration = {
+    registerAll: jest.fn().mockResolvedValue({ registered: 2, failed: 0 }),
+  };
+
   const service = new IntegrationJobRunnerService(
     prisma as never,
     integrations as never,
     importService as never,
+    pushService as never,
+    webhookRegistration as never,
   );
-  return { service, prisma, integrations, importService };
+  return {
+    service,
+    prisma,
+    integrations,
+    importService,
+    pushService,
+    webhookRegistration,
+  };
 };
 
 describe('IntegrationJobRunnerService — claiming', () => {
@@ -183,6 +199,61 @@ describe('IntegrationJobRunnerService — import jobs', () => {
     expect(ctx.prisma.integrationSyncJob.update.mock.calls[0][0].data).toMatchObject({
       status: SyncJobStatus.FAILED,
       permanentFailure: true,
+    });
+  });
+});
+
+describe('IntegrationJobRunnerService — phase 3 job types', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const runOne = async (ctx: ReturnType<typeof build>, over = {}) => {
+    ctx.prisma.integrationSyncJob.findMany.mockResolvedValue([job(over)]);
+    ctx.prisma.integrationSyncJob.findUnique.mockResolvedValue(job(over));
+    await ctx.service.runDueJobs();
+  };
+
+  it('pushes the quantities carried in the job payload', async () => {
+    const ctx = build();
+    ctx.prisma.sellerIntegration.findUnique.mockResolvedValue(
+      integrationRow({ inventoryDirection: 'TWO_WAY' }),
+    );
+
+    await runOne(ctx, {
+      jobType: SyncJobType.INVENTORY_PUSH,
+      payload: { targets: [{ mappingId: 'map-1', quantity: 4 }] },
+    });
+
+    expect(ctx.pushService.pushQuantities).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'int-1' }),
+      [{ mappingId: 'map-1', quantity: 4 }],
+    );
+  });
+
+  it('refuses to push to an import-only channel, which the seller set as read-only', async () => {
+    const ctx = build();
+    ctx.prisma.sellerIntegration.findUnique.mockResolvedValue(
+      integrationRow({ inventoryDirection: 'IMPORT_ONLY' }),
+    );
+
+    await runOne(ctx, {
+      jobType: SyncJobType.INVENTORY_PUSH,
+      payload: { targets: [{ mappingId: 'map-1', quantity: 4 }] },
+    });
+
+    expect(ctx.pushService.pushQuantities).not.toHaveBeenCalled();
+    expect(ctx.prisma.integrationSyncJob.update.mock.calls[0][0].data).toMatchObject({
+      permanentFailure: true,
+    });
+  });
+
+  it('runs webhook registration instead of rejecting it as unsupported', async () => {
+    const ctx = build();
+
+    await runOne(ctx, { jobType: SyncJobType.WEBHOOK_REGISTRATION });
+
+    expect(ctx.webhookRegistration.registerAll).toHaveBeenCalled();
+    expect(ctx.prisma.integrationSyncJob.update.mock.calls[0][0].data).toMatchObject({
+      status: SyncJobStatus.COMPLETED,
     });
   });
 });

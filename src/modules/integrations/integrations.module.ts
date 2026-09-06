@@ -1,7 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ProductsModule } from '../products/products.module';
+import { IntegrationEventsService } from './integration-events.service';
 import { IntegrationImportService } from './integration-import.service';
 import { IntegrationJobRunnerService } from './integration-job-runner.service';
+import { IntegrationPushService } from './integration-push.service';
+import { IntegrationReconciliationService } from './integration-reconciliation.service';
+import { IntegrationWebhookRegistrationService } from './integration-webhook-registration.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationCallbacksController } from './integration-callbacks.controller';
 import { IntegrationsService } from './integrations.service';
@@ -32,6 +36,10 @@ import { AmazonProvider } from './providers/amazon.provider';
     IntegrationHealthService,
     IntegrationImportService,
     IntegrationJobRunnerService,
+    IntegrationPushService,
+    IntegrationEventsService,
+    IntegrationReconciliationService,
+    IntegrationWebhookRegistrationService,
     EncryptionService,
     ShopifyProvider,
     WooCommerceProvider,

@@ -12,7 +12,7 @@ import { ExternalProductPage } from './external-product.types';
 interface AmazonListingsResponse {
   items?: Array<{
     sku?: string;
-    summaries?: Array<{ asin?: string; itemName?: string }>;
+    summaries?: Array<{ asin?: string; itemName?: string; productType?: string }>;
     fulfillmentAvailability?: Array<{
       fulfillmentChannelCode?: string;
       quantity?: number;
@@ -368,6 +368,8 @@ export class AmazonProvider {
       const summary = item.summaries?.[0];
       const asin = summary?.asin ?? null;
       const title = summary?.itemName ?? sku;
+      // Captured now because a later quantity PATCH cannot be made without it.
+      const productType = summary?.productType ?? null;
 
       const availability = item.fulfillmentAvailability ?? [];
       if (availability.length === 0) {
@@ -381,6 +383,7 @@ export class AmazonProvider {
           quantity: null,
           fulfillmentChannel: 'MERCHANT' as const,
           asin,
+          productType,
         });
         continue;
       }
@@ -401,11 +404,60 @@ export class AmazonProvider {
             ? ('MERCHANT' as const)
             : ('AMAZON_FBA' as const),
           asin,
+          productType,
         });
       }
     }
 
     return { products, nextCursor: data?.pagination?.nextToken ?? null };
+  }
+
+  /**
+   * Sets the merchant-fulfilled quantity for one SKU via a Listings Items
+   * PATCH.
+   *
+   * Amazon requires `productType` on every patch, which is why it is captured
+   * at import time. Only the DEFAULT (merchant) fulfilment channel is ever
+   * written: FBA quantities belong to Amazon's fulfilment centres and are not
+   * ours to set.
+   */
+  async setMerchantQuantity(
+    credentials: AmazonCredentials,
+    sku: string,
+    productType: string,
+    quantity: number,
+  ): Promise<void> {
+    const host = SP_API_HOSTS[credentials.region] ?? SP_API_HOSTS.na;
+    const accessToken = await this.getAccessToken(credentials.refreshToken);
+
+    await axios.patch(
+      `https://${host}/listings/2021-08-01/items/${encodeURIComponent(
+        credentials.sellingPartnerId,
+      )}/${encodeURIComponent(sku)}`,
+      {
+        productType,
+        patches: [
+          {
+            op: 'replace',
+            path: '/attributes/fulfillment_availability',
+            value: [
+              {
+                fulfillment_channel_code: 'DEFAULT',
+                quantity,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        headers: {
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json',
+        },
+        params: { marketplaceIds: credentials.marketplaceId },
+        timeout: 25_000,
+      },
+    );
   }
 
   /**

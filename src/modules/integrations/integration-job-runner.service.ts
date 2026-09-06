@@ -4,6 +4,7 @@ import { AxiosError } from 'axios';
 import {
   IntegrationLogStatus,
   IntegrationStatus,
+  IntegrationSyncDirection,
   IntegrationSyncJob,
   SellerIntegration,
   SyncJobStatus,
@@ -15,6 +16,8 @@ import {
   IntegrationImportService,
   PermanentIntegrationError,
 } from './integration-import.service';
+import { IntegrationPushService } from './integration-push.service';
+import { IntegrationWebhookRegistrationService } from './integration-webhook-registration.service';
 
 /**
  * Runs queued channel work.
@@ -44,6 +47,8 @@ export class IntegrationJobRunnerService {
     private readonly prisma: PrismaService,
     private readonly integrations: IntegrationsService,
     private readonly importService: IntegrationImportService,
+    private readonly pushService: IntegrationPushService,
+    private readonly webhookRegistration: IntegrationWebhookRegistrationService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -127,9 +132,15 @@ export class IntegrationJobRunnerService {
           await this.runInventoryPull(job, integration);
           break;
 
+        case SyncJobType.INVENTORY_PUSH:
+          await this.runInventoryPush(job, integration);
+          break;
+
+        case SyncJobType.WEBHOOK_REGISTRATION:
+          await this.runWebhookRegistration(job, integration);
+          break;
+
         default:
-          // INVENTORY_PUSH and WEBHOOK_REGISTRATION belong to phase 3. Failing
-          // loudly beats silently marking them complete.
           await this.finishPermanently(
             job,
             'This job type is not supported yet.',
@@ -222,6 +233,43 @@ export class IntegrationJobRunnerService {
     if (result.conflicts) parts.push(`${result.conflicts} need a decision`);
     if (result.unmapped) parts.push(`${result.unmapped} not matched`);
     return `${parts.join(', ')}.`;
+  }
+
+  /**
+   * Writes Yukizi quantities out to one channel.
+   *
+   * Refuses on an import-only channel even if a job somehow reached here:
+   * the seller has said that channel is a read source, and writing to it
+   * would be doing the opposite of what they configured.
+   */
+  private async runInventoryPush(
+    job: IntegrationSyncJob,
+    integration: SellerIntegration,
+  ): Promise<void> {
+    if (integration.inventoryDirection === IntegrationSyncDirection.IMPORT_ONLY) {
+      await this.finishPermanently(
+        job,
+        'This channel is set to import only, so Yukizi does not write to it.',
+      );
+      return;
+    }
+
+    const payload = (job.payload ?? {}) as {
+      targets?: Array<{ mappingId: string; quantity: number }>;
+    };
+    const targets = payload.targets ?? [];
+
+    const result = await this.pushService.pushQuantities(integration, targets);
+    await this.completeJob(job, integration, result.pushed);
+  }
+
+  /** Subscribes to the channel's change notifications. */
+  private async runWebhookRegistration(
+    job: IntegrationSyncJob,
+    integration: SellerIntegration,
+  ): Promise<void> {
+    const result = await this.webhookRegistration.registerAll(integration);
+    await this.completeJob(job, integration, result.registered);
   }
 
   private async runInventoryPull(

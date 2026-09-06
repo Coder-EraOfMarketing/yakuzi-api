@@ -1666,6 +1666,12 @@ model IntegrationProductMapping {
   externalSku       String?
   externalListingId String?
   externalTitle     String?
+  /// Shopify only: the inventory_item_id. Setting a quantity on Shopify keys
+  /// off this, not the variant id, so it has to be captured during import.
+  externalInventoryRef String?
+  /// Amazon only: the listing's productType, which the Listings Items PATCH
+  /// requires. Captured during import so a quantity update needs no extra call.
+  externalProductType  String?
   /// Amazon only.
   asin          String?
   marketplaceId String?

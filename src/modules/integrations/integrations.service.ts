@@ -499,10 +499,20 @@ export class IntegrationsService {
 
   /**
    * Two-way sync requires an inbound event path so Yukizi can recognise the
-   * echo of its own write. Phase 3 turns these on per provider.
+   * echo of its own write, otherwise every push would come back as news and
+   * bounce around the connected channels forever.
+   *
+   * Shopify and WooCommerce both have signature-verified webhook receivers and
+   * registered subscriptions, so they qualify. Amazon does not: SP-API
+   * notifications need an SQS destination Yukizi does not operate yet, so its
+   * inbound path is the periodic sweep, which is too coarse to distinguish an
+   * echo from a real change. Amazon therefore stays import- or export-only.
    */
-  private supportsTwoWaySync(_provider: IntegrationProvider): boolean {
-    return false;
+  private supportsTwoWaySync(provider: IntegrationProvider): boolean {
+    return (
+      provider === IntegrationProvider.SHOPIFY ||
+      provider === IntegrationProvider.WOOCOMMERCE
+    );
   }
 
   /** Finishes the post-connect wizard and unlocks sync jobs. */
@@ -560,6 +570,22 @@ export class IntegrationsService {
           action: 'IMPORT_QUEUED',
           status: IntegrationLogStatus.SUCCESS,
           message: 'Initial product import queued.',
+        });
+      }
+
+      // Subscribe to the channel's change notifications. Without this the
+      // webhook receivers can never fire — Shopify is never asked to send
+      // anything, and WooCommerce deliveries have no secret to verify against.
+      // Queued separately so a store that blocks webhook creation still gets
+      // its catalogue imported.
+      if (dto.syncInventory) {
+        await this.prisma.integrationSyncJob.create({
+          data: {
+            sellerId,
+            integrationId: integration.id,
+            jobType: SyncJobType.WEBHOOK_REGISTRATION,
+            runAfter: new Date(Date.now() + 3_000),
+          },
         });
       }
     }

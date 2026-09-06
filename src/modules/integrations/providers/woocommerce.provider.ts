@@ -340,6 +340,42 @@ export class WooCommerceProvider {
     };
   }
 
+  /**
+   * Writes an absolute stock quantity.
+   *
+   * A variation has its own endpoint; a simple product is updated directly.
+   * `manage_stock: true` is sent alongside because a store that is not
+   * managing stock for that product would otherwise accept the quantity and
+   * silently ignore it.
+   */
+  async updateStockQuantity(
+    storeUrl: string,
+    credentials: { consumerKey: string; consumerSecret: string },
+    productId: string,
+    variationId: string | null,
+    quantity: number,
+  ): Promise<void> {
+    const normalized = normalizeStoreUrl(storeUrl);
+    await assertPublicHostname(new URL(normalized).hostname);
+
+    const path = variationId
+      ? `${normalized}/wp-json/wc/v3/products/${productId}/variations/${variationId}`
+      : `${normalized}/wp-json/wc/v3/products/${productId}`;
+
+    await axios.put(
+      path,
+      { manage_stock: true, stock_quantity: quantity },
+      {
+        auth: {
+          username: credentials.consumerKey,
+          password: credentials.consumerSecret,
+        },
+        timeout: 20_000,
+        headers: { 'User-Agent': 'Yukizi-Integrations/1.0' },
+      },
+    );
+  }
+
   /** Variations of one variable product. Capped: 100 is Woo's own maximum. */
   private async fetchVariations(
     normalizedStoreUrl: string,

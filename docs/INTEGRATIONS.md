@@ -247,26 +247,83 @@ existing background-work pattern. Notable properties:
 
 ---
 
+## Inventory export and the event engine (phase 3)
+
+### How a change travels
+
+1. A channel sends a webhook. The receiver verifies the signature and records
+   an `InventoryEvent`.
+2. `IntegrationEventsService` (every minute) claims the event with a
+   compare-and-swap, applies it to Yukizi stock, and **fans out**: one
+   `INVENTORY_PUSH` job per *other* channel carrying that listing.
+3. The job runner writes the quantity to each of those channels.
+
+The source channel is excluded from the fan-out, so an update travels outward
+once and cannot return to where it came from.
+
+### Loop prevention, end to end
+
+Three independent guards, in the order they fire:
+
+| Guard | Where | Stops |
+|---|---|---|
+| Unique `(sourcePlatform, sourceEventId)` | database | The same webhook applied twice |
+| Outbound intent record | `IntegrationPushService` | The echo of our own write being treated as news |
+| `QUANTITY_UNCHANGED` | `IntegrationEventsService` | Anything that would not change Yukizi's number fanning out |
+
+The outbound record is written **before** the channel call, not after: if the
+request succeeds but the response is lost, the echo is still recognised.
+
+### What export refuses to write
+
+- **Amazon FBA stock** — it lives in Amazon's fulfilment centres.
+- **Any listing with an unresolved inventory difference** — the seller is being
+  asked which number is right; writing would pre-empt them.
+- **Import-only channels** — the seller declared those a read source.
+- **A listing missing its provider handle** (Shopify inventory item, Amazon
+  product type). That row is skipped with a reason; the rest of the batch still
+  goes. `UnaddressableListingError` exists specifically so one incomplete
+  listing cannot abort a whole batch.
+
+### Webhook registration
+
+Runs as a job when setup completes, and is idempotent — a re-run deletes what
+it previously created rather than leaving duplicate subscriptions on the store.
+Shopify subscribes to `inventory_levels/update` and `app/uninstalled`;
+WooCommerce to `product.updated` and `product.deleted`, each with its own
+generated signing secret stored encrypted.
+
+Amazon registers nothing: SP-API notifications need an SQS destination Yukizi
+does not operate, so that channel relies on the sweep.
+
+### Reconciliation
+
+Hourly, queueing any connection whose last successful sync is over 6 hours old,
+capped per tick and never stacked on work already in flight. This is what
+catches missed webhooks — and it is Amazon's only inbound path.
+
+### Two-way sync
+
+Enabled for **Shopify and WooCommerce**, which have signature-verified inbound
+webhooks. **Amazon stays import- or export-only**: its inbound path is the
+periodic sweep, which cannot distinguish an echo from a real change, so two-way
+there would risk double-deduction. The UI mirrors this, and the API refuses it
+regardless of what the UI offers.
+
+---
+
 ## What is implemented, and what is not
 
-**Phases 1 and 2 — complete and real:**
-Integrations UI; the full data model; Shopify OAuth; WooCommerce
-`/wc-auth/v1/authorize`; Amazon LWA/SP-API; encrypted credential storage;
-connection health with an hourly probe; disconnect with remote webhook cleanup;
-setup wizard; sync activity log; signature-verified webhook receivers with
-idempotency and loop protection; catalogue import for all three channels; SKU
-matching with explicit conflict states; manual mapping; inventory import with
-seller-resolved conflicts; and the background job runner with retry/backoff.
+**Phases 1–3 — complete and real:** everything above. Authorization for three
+platforms, encrypted credentials, health checks, catalogue import, SKU matching,
+inventory import and export, the event ledger with loop protection, webhook
+registration and verification, the job runner, and reconciliation.
 
-**Not yet implemented (phase 3):** pushing Yukizi quantities outward to
-channels, automatic webhook registration at connect time, and scheduled
-reconciliation sweeps. `SyncJobType.INVENTORY_PUSH` and `WEBHOOK_REGISTRATION`
-are rejected by the runner rather than silently marked complete.
+**Not implemented (phase 4):** order import and price synchronization. Both are
+marked **Coming soon** in the UI, with columns reserved (`syncOrders`,
+`syncPrices`) that no job reads.
 
-Consequently, **two-way sync is still refused by the API**
-(`supportsTwoWaySync()` returns `false`), and resolving an inventory difference
-in Yukizi's favour clears the flag without pushing the correction to the channel
-— the UI says exactly that rather than claiming the channel was updated.
-
-Price and order sync remain **Coming soon** in the UI, with columns reserved
-(`syncPrices`, `syncOrders`) that no job reads.
+Also deliberately absent: Amazon SP-API Notifications (needs an SQS
+destination), and the Feeds API for bulk Amazon updates — the Listings Items
+PATCH is used per listing, which is correct at current catalogue sizes and can
+be swapped for Feeds without touching the mapping model.

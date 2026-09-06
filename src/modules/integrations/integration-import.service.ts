@@ -173,6 +173,10 @@ export class IntegrationImportService {
       externalSku: product.sku,
       externalTitle: product.title,
       asin: product.asin ?? null,
+      // Handles the export path needs; captured on read so a push costs no
+      // extra API call.
+      externalInventoryRef: product.inventoryRef ?? null,
+      externalProductType: product.productType ?? null,
       marketplaceId: integration.marketplaceId ?? null,
       fulfillmentChannel,
       externalQuantity: product.quantity,

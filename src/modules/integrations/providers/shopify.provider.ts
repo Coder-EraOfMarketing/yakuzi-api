@@ -313,12 +313,70 @@ export class ShopifyProvider {
               : null,
           // Shopify stock is always merchant-controlled from our side.
           fulfillmentChannel: 'MERCHANT' as const,
-          extra: { inventoryItemId: String(variant.inventory_item_id ?? '') },
+          // Needed later to write a quantity back: Shopify keys inventory on
+          // the inventory item, not the variant.
+          inventoryRef: variant.inventory_item_id
+            ? String(variant.inventory_item_id)
+            : null,
         });
       }
     }
 
     return { products, nextCursor: this.parseNextCursor(response.headers?.link) };
+  }
+
+  /**
+   * The location inventory is tracked against.
+   *
+   * Shopify inventory is per-location, so a quantity cannot be set without
+   * one. Sellers on Yukizi are single-location in practice; the first active
+   * location is used, and a store with several would need an explicit choice
+   * (deliberately not guessed here).
+   */
+  async fetchPrimaryLocationId(
+    shopDomain: string,
+    accessToken: string,
+  ): Promise<string | null> {
+    const shop = normalizeShopifyDomain(shopDomain);
+    const { data } = await axios.get<{
+      locations: Array<{ id: number; active?: boolean }>;
+    }>(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/locations.json`, {
+      headers: { 'X-Shopify-Access-Token': accessToken },
+      timeout: 15_000,
+    });
+
+    const locations = data?.locations ?? [];
+    const active = locations.find((l) => l.active !== false) ?? locations[0];
+    return active?.id ? String(active.id) : null;
+  }
+
+  /**
+   * Sets the absolute quantity for one inventory item.
+   *
+   * `set` rather than `adjust` on purpose: Yukizi knows the number it wants,
+   * and a delta would compound if a request were ever retried after a
+   * response was lost.
+   */
+  async setInventoryLevel(
+    shopDomain: string,
+    accessToken: string,
+    inventoryItemId: string,
+    locationId: string,
+    available: number,
+  ): Promise<void> {
+    const shop = normalizeShopifyDomain(shopDomain);
+    await axios.post(
+      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/inventory_levels/set.json`,
+      {
+        location_id: Number(locationId),
+        inventory_item_id: Number(inventoryItemId),
+        available,
+      },
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 20_000,
+      },
+    );
   }
 
   /**

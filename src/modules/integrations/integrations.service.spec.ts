@@ -317,10 +317,40 @@ describe('IntegrationsService — disconnect', () => {
 describe('IntegrationsService — sync settings', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('rejects two-way sync while loop protection is not active for the provider', async () => {
+  it('allows two-way sync on Shopify, which has a verified inbound webhook path', async () => {
     const { service, prisma } = build();
     prisma.sellerIntegration.findFirst.mockResolvedValue(integrationRow());
 
+    await service.updateSettings('user-1', 'int-1', {
+      inventoryDirection: IntegrationSyncDirection.TWO_WAY,
+    });
+
+    expect(prisma.sellerIntegration.update.mock.calls[0][0].data).toMatchObject({
+      inventoryDirection: IntegrationSyncDirection.TWO_WAY,
+    });
+  });
+
+  it('allows two-way sync on WooCommerce', async () => {
+    const { service, prisma } = build();
+    prisma.sellerIntegration.findFirst.mockResolvedValue(
+      integrationRow({ provider: IntegrationProvider.WOOCOMMERCE }),
+    );
+
+    await service.updateSettings('user-1', 'int-1', {
+      inventoryDirection: IntegrationSyncDirection.TWO_WAY,
+    });
+
+    expect(prisma.sellerIntegration.update).toHaveBeenCalled();
+  });
+
+  it('still refuses two-way sync on Amazon, whose only inbound path is the periodic sweep', async () => {
+    const { service, prisma } = build();
+    prisma.sellerIntegration.findFirst.mockResolvedValue(
+      integrationRow({ provider: IntegrationProvider.AMAZON }),
+    );
+
+    // A sweep cannot tell an echo from a real change, so two-way there would
+    // risk double-deduction.
     await expect(
       service.updateSettings('user-1', 'int-1', {
         inventoryDirection: IntegrationSyncDirection.TWO_WAY,
