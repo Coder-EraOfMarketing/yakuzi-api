@@ -1548,6 +1548,8 @@ enum SyncJobType {
   INVENTORY_PULL
   RECONCILIATION
   WEBHOOK_REGISTRATION
+  ORDER_IMPORT
+  PRICE_PUSH
 }
 
 enum IntegrationLogStatus {
@@ -1616,6 +1618,7 @@ model SellerIntegration {
   jobs     IntegrationSyncJob[]
   logs     IntegrationLog[]
   webhooks IntegrationWebhook[]
+  externalOrders IntegrationExternalOrder[]
 
   @@unique([sellerId, provider, externalAccountId])
   @@index([sellerId])
@@ -1669,6 +1672,11 @@ model IntegrationProductMapping {
   /// Shopify only: the inventory_item_id. Setting a quantity on Shopify keys
   /// off this, not the variant id, so it has to be captured during import.
   externalInventoryRef String?
+  /// What the channel currently charges, so a price difference can be shown
+  /// without re-querying. Yukizi never changes a price on the strength of
+  /// this alone — price export is opt-in per connection.
+  externalPrice        Decimal?  @db.Decimal(12, 2)
+  externalPriceAt      DateTime?
   /// Amazon only: the listing's productType, which the Listings Items PATCH
   /// requires. Captured during import so a quantity update needs no extra call.
   externalProductType  String?
@@ -1840,4 +1848,56 @@ model IntegrationOAuthState {
   @@index([sellerId, provider])
   @@index([expiresAt])
   @@map("integration_oauth_states")
+}
+
+/// A sale that happened on a connected channel.
+///
+/// Deliberately NOT a Yukizi `Order`. Two reasons, both load-bearing:
+///
+///  1. Seller settlements are computed by querying `order_items`
+///     (SettlementsService). Writing a Shopify sale there would make Yukizi
+///     owe the seller money for an order Yukizi never processed and never
+///     collected payment for.
+///  2. `Order.buyerId` is a required foreign key to `User`. Importing would
+///     mean fabricating buyer accounts for other platforms' customers.
+///
+/// So channel orders live here: visible to the seller, counted in reporting,
+/// and structurally incapable of reaching payouts, invoices or notifications.
+///
+/// No customer PII is stored — no name, email, phone or address. Yukizi does
+/// not need it to show a seller their channel sales, and importing it would
+/// take on a data-protection obligation for another platform's customers.
+model IntegrationExternalOrder {
+  id            String @id @default(uuid())
+  sellerId      String
+  integrationId String
+
+  /// The channel's own id, and the human-facing number if it has one.
+  externalOrderId String
+  orderNumber     String?
+
+  placedAt DateTime
+  /// Provider status verbatim (e.g. 'fulfilled', 'processing', 'Shipped').
+  status   String?
+  /// Provider payment status where reported.
+  financialStatus String?
+  currency        String?
+  totalAmount     Decimal @db.Decimal(12, 2)
+  itemCount       Int     @default(0)
+
+  /// Line items as [{ sku, quantity, price, title }]. JSON because they are
+  /// only ever read as a whole, alongside their order.
+  items Json
+
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  integration SellerIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  /// Re-importing an order updates it rather than duplicating it.
+  @@unique([integrationId, externalOrderId])
+  @@index([sellerId, placedAt])
+  @@index([integrationId, placedAt])
+  @@map("integration_external_orders")
 }

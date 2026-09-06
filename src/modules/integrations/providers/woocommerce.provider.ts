@@ -2,7 +2,27 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import axios, { AxiosError } from 'axios';
 import * as crypto from 'crypto';
 import { assertPublicHostname, normalizeStoreUrl } from '../store-url.util';
-import { ExternalProductPage } from './external-product.types';
+import {
+  ExternalOrderPage,
+  ExternalProductPage,
+} from './external-product.types';
+
+/** Only the fields of Woo's order payload this integration reads. */
+interface WooRawOrder {
+  id: number;
+  number?: string;
+  status?: string;
+  currency?: string;
+  total?: string;
+  date_created?: string;
+  date_modified?: string;
+  line_items?: Array<{
+    sku?: string;
+    name?: string;
+    quantity?: number;
+    price?: number | string;
+  }>;
+}
 
 /** Only the fields of Woo's product payload this integration reads. */
 interface WooRawProduct {
@@ -338,6 +358,97 @@ export class WooCommerceProvider {
       nextCursor:
         Number.isFinite(totalPages) && page < totalPages ? String(page + 1) : null,
     };
+  }
+
+  /**
+   * One page of orders placed since `since`.
+   *
+   * WooCommerce's existing read_write key already covers orders, so unlike
+   * Shopify this needs no additional permission from the seller.
+   */
+  async fetchOrdersPage(
+    storeUrl: string,
+    credentials: { consumerKey: string; consumerSecret: string },
+    since: Date,
+    page = 1,
+  ): Promise<ExternalOrderPage> {
+    const normalized = normalizeStoreUrl(storeUrl);
+    await assertPublicHostname(new URL(normalized).hostname);
+
+    const response = await axios.get<WooRawOrder[]>(
+      `${normalized}/wp-json/wc/v3/orders`,
+      {
+        auth: {
+          username: credentials.consumerKey,
+          password: credentials.consumerSecret,
+        },
+        params: { per_page: 50, page, after: since.toISOString() },
+        timeout: 30_000,
+        headers: { 'User-Agent': 'Yukizi-Integrations/1.0' },
+      },
+    );
+
+    const orders = (response.data ?? []).map((order) => ({
+      externalOrderId: String(order.id),
+      orderNumber: order.number ?? null,
+      placedAt: order.date_created ? new Date(order.date_created) : new Date(),
+      status: order.status ?? null,
+      financialStatus: order.status === 'completed' ? 'paid' : null,
+      currency: order.currency ?? null,
+      totalAmount: Number(order.total ?? 0),
+      cancelledAt:
+        order.status === 'cancelled' && order.date_modified
+          ? new Date(order.date_modified)
+          : null,
+      items: (order.line_items ?? []).map((line) => ({
+        sku: line.sku?.trim() || null,
+        title: line.name ?? null,
+        quantity: Number(line.quantity ?? 0),
+        price: Number(line.price ?? 0),
+      })),
+    }));
+
+    const totalPages = Number(response.headers?.['x-wp-totalpages'] ?? 1);
+    return {
+      orders,
+      nextCursor:
+        Number.isFinite(totalPages) && page < totalPages ? String(page + 1) : null,
+    };
+  }
+
+  /**
+   * Sets the regular price on a product or variation.
+   *
+   * `regular_price` rather than `price`: `price` is computed by WooCommerce
+   * from the regular and sale prices, and writing it directly is ignored.
+   * Writing the regular price also leaves any active sale intact.
+   */
+  async updatePrice(
+    storeUrl: string,
+    credentials: { consumerKey: string; consumerSecret: string },
+    productId: string,
+    variationId: string | null,
+    price: number,
+  ): Promise<void> {
+    const normalized = normalizeStoreUrl(storeUrl);
+    await assertPublicHostname(new URL(normalized).hostname);
+
+    const path = variationId
+      ? `${normalized}/wp-json/wc/v3/products/${productId}/variations/${variationId}`
+      : `${normalized}/wp-json/wc/v3/products/${productId}`;
+
+    await axios.put(
+      path,
+      { regular_price: price.toFixed(2) },
+      {
+        auth: {
+          username: credentials.consumerKey,
+          password: credentials.consumerSecret,
+        },
+        timeout: 20_000,
+        headers: { 'User-Agent': 'Yukizi-Integrations/1.0' },
+      },
+    );
   }
 
   /**

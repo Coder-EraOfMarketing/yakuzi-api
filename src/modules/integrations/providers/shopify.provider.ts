@@ -8,7 +8,28 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import * as crypto from 'crypto';
 import { normalizeShopifyDomain } from '../store-url.util';
-import { ExternalProductPage } from './external-product.types';
+import {
+  ExternalOrderPage,
+  ExternalProductPage,
+} from './external-product.types';
+
+/** Only the fields of Shopify's order payload this integration reads. */
+interface ShopifyRawOrder {
+  id: number;
+  name?: string;
+  created_at?: string;
+  cancelled_at?: string | null;
+  fulfillment_status?: string | null;
+  financial_status?: string | null;
+  currency?: string;
+  total_price?: string;
+  line_items?: Array<{
+    sku?: string;
+    title?: string;
+    quantity?: number;
+    price?: string;
+  }>;
+}
 
 /** Only the fields of Shopify's product payload this integration reads. */
 interface ShopifyRawProduct {
@@ -54,6 +75,34 @@ export const SHOPIFY_SCOPES = [
   'write_inventory',
   'read_locations',
 ];
+
+/**
+ * Scopes requested only when the seller turns the matching feature on.
+ *
+ * They are deliberately not in the base set. `read_orders` is protected
+ * customer data and needs Shopify's approval, and `write_products` allows
+ * changing what a live store charges — neither should be granted by every
+ * seller who only wants inventory kept in step.
+ *
+ * Because scopes are granted at authorisation, enabling one of these on an
+ * existing connection means reconnecting. IntegrationsService compares the
+ * stored `scopes` against what is now needed and asks for exactly that.
+ */
+export const SHOPIFY_OPTIONAL_SCOPES = {
+  orders: 'read_orders',
+  prices: 'write_products',
+} as const;
+
+/** The scope set for a connection with these features enabled. */
+export function shopifyScopesFor(features: {
+  orders?: boolean;
+  prices?: boolean;
+}): string[] {
+  const scopes = [...SHOPIFY_SCOPES];
+  if (features.orders) scopes.push(SHOPIFY_OPTIONAL_SCOPES.orders);
+  if (features.prices) scopes.push(SHOPIFY_OPTIONAL_SCOPES.prices);
+  return scopes;
+}
 
 export interface ShopifyCredentials {
   accessToken: string;
@@ -101,7 +150,11 @@ export class ShopifyProvider {
    * and persisted by the caller; it comes back on the callback and is what
    * proves the response belongs to a flow we started.
    */
-  buildAuthorizationUrl(shopDomain: string, state: string): string {
+  buildAuthorizationUrl(
+    shopDomain: string,
+    state: string,
+    features: { orders?: boolean; prices?: boolean } = {},
+  ): string {
     if (!this.isConfigured()) {
       throw new ServiceUnavailableException(
         'Shopify connections are not available yet. Please contact Yukizi support.',
@@ -110,7 +163,7 @@ export class ShopifyProvider {
     const shop = normalizeShopifyDomain(shopDomain);
     const params = new URLSearchParams({
       client_id: this.clientId as string,
-      scope: SHOPIFY_SCOPES.join(','),
+      scope: shopifyScopesFor(features).join(','),
       redirect_uri: this.redirectUri as string,
       state,
     });
@@ -323,6 +376,79 @@ export class ShopifyProvider {
     }
 
     return { products, nextCursor: this.parseNextCursor(response.headers?.link) };
+  }
+
+  /**
+   * One page of orders placed since `since`.
+   *
+   * Requires the `read_orders` scope, which Shopify treats as protected
+   * customer data. Nothing here reads a customer field: only the order's own
+   * totals and its line items' SKUs, which is all Yukizi shows a seller.
+   */
+  async fetchOrdersPage(
+    shopDomain: string,
+    accessToken: string,
+    since: Date,
+    cursor?: string | null,
+  ): Promise<ExternalOrderPage> {
+    const shop = normalizeShopifyDomain(shopDomain);
+    const params = new URLSearchParams({ limit: '100' });
+    if (cursor) {
+      params.set('page_info', cursor);
+    } else {
+      params.set('status', 'any');
+      params.set('updated_at_min', since.toISOString());
+    }
+
+    const response = await axios.get<{ orders: ShopifyRawOrder[] }>(
+      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json?${params.toString()}`,
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 30_000,
+      },
+    );
+
+    const orders = (response.data?.orders ?? []).map((order) => ({
+      externalOrderId: String(order.id),
+      orderNumber: order.name ?? null,
+      placedAt: order.created_at ? new Date(order.created_at) : new Date(),
+      status: order.fulfillment_status ?? 'unfulfilled',
+      financialStatus: order.financial_status ?? null,
+      currency: order.currency ?? null,
+      totalAmount: Number(order.total_price ?? 0),
+      cancelledAt: order.cancelled_at ? new Date(order.cancelled_at) : null,
+      items: (order.line_items ?? []).map((line) => ({
+        sku: line.sku?.trim() || null,
+        title: line.title ?? null,
+        quantity: Number(line.quantity ?? 0),
+        price: Number(line.price ?? 0),
+      })),
+    }));
+
+    return { orders, nextCursor: this.parseNextCursor(response.headers?.link) };
+  }
+
+  /**
+   * Sets a variant's price. Requires `write_products`.
+   *
+   * Shopify prices are strings with two decimals; sending a number can be
+   * rejected or silently rounded.
+   */
+  async setVariantPrice(
+    shopDomain: string,
+    accessToken: string,
+    variantId: string,
+    price: number,
+  ): Promise<void> {
+    const shop = normalizeShopifyDomain(shopDomain);
+    await axios.put(
+      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/variants/${variantId}.json`,
+      { variant: { id: Number(variantId), price: price.toFixed(2) } },
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 20_000,
+      },
+    );
   }
 
   /**

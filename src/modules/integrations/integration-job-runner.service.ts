@@ -16,6 +16,7 @@ import {
   IntegrationImportService,
   PermanentIntegrationError,
 } from './integration-import.service';
+import { IntegrationOrdersService } from './integration-orders.service';
 import { IntegrationPushService } from './integration-push.service';
 import { IntegrationWebhookRegistrationService } from './integration-webhook-registration.service';
 
@@ -49,6 +50,7 @@ export class IntegrationJobRunnerService {
     private readonly importService: IntegrationImportService,
     private readonly pushService: IntegrationPushService,
     private readonly webhookRegistration: IntegrationWebhookRegistrationService,
+    private readonly ordersService: IntegrationOrdersService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -138,6 +140,14 @@ export class IntegrationJobRunnerService {
 
         case SyncJobType.WEBHOOK_REGISTRATION:
           await this.runWebhookRegistration(job, integration);
+          break;
+
+        case SyncJobType.ORDER_IMPORT:
+          await this.runOrderImport(job, integration);
+          break;
+
+        case SyncJobType.PRICE_PUSH:
+          await this.runPricePush(job, integration);
           break;
 
         default:
@@ -260,6 +270,96 @@ export class IntegrationJobRunnerService {
     const targets = payload.targets ?? [];
 
     const result = await this.pushService.pushQuantities(integration, targets);
+    await this.completeJob(job, integration, result.pushed);
+  }
+
+  /**
+   * Imports channel orders for visibility.
+   *
+   * Refuses when the connection lacks the permission the feature needs —
+   * Shopify's `read_orders` is granted at authorisation, so a seller who
+   * enabled orders afterwards must reconnect. Failing with that message beats
+   * retrying a call that will keep returning 403.
+   */
+  private async runOrderImport(
+    job: IntegrationSyncJob,
+    integration: SellerIntegration,
+  ): Promise<void> {
+    if (!integration.syncOrders) {
+      await this.finishPermanently(job, 'Order sync is turned off.');
+      return;
+    }
+
+    const missing = this.integrations.missingScopesFor(integration);
+    if (missing.length > 0) {
+      await this.finishPermanently(
+        job,
+        'Reconnect this channel to allow Yukizi to read orders.',
+      );
+      return;
+    }
+
+    const payload = (job.payload ?? {}) as { cursor?: string | null };
+    const result = await this.ordersService.importOrders(
+      integration,
+      payload.cursor ?? null,
+    );
+
+    if (result.nextCursor) {
+      await this.prisma.$transaction([
+        this.prisma.integrationSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: SyncJobStatus.COMPLETED,
+            completedAt: new Date(),
+            processedItems: job.processedItems + result.imported,
+          },
+        }),
+        this.prisma.integrationSyncJob.create({
+          data: {
+            sellerId: job.sellerId,
+            integrationId: job.integrationId,
+            jobType: SyncJobType.ORDER_IMPORT,
+            payload: { cursor: result.nextCursor },
+            processedItems: job.processedItems + result.imported,
+            runAfter: new Date(Date.now() + 10_000),
+          },
+        }),
+      ]);
+      return;
+    }
+
+    await this.completeJob(
+      job,
+      integration,
+      job.processedItems + result.imported,
+    );
+  }
+
+  /** Sends Yukizi prices to the channel. Opt-in per connection. */
+  private async runPricePush(
+    job: IntegrationSyncJob,
+    integration: SellerIntegration,
+  ): Promise<void> {
+    if (!integration.syncPrices) {
+      await this.finishPermanently(job, 'Price sync is turned off.');
+      return;
+    }
+
+    const missing = this.integrations.missingScopesFor(integration);
+    if (missing.length > 0) {
+      await this.finishPermanently(
+        job,
+        'Reconnect this channel to allow Yukizi to update prices.',
+      );
+      return;
+    }
+
+    const payload = (job.payload ?? {}) as { mappingIds?: string[] };
+    const result = await this.pushService.pushPrices(
+      integration,
+      payload.mappingIds ?? [],
+    );
     await this.completeJob(job, integration, result.pushed);
   }
 

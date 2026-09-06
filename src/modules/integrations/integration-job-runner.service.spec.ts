@@ -66,12 +66,17 @@ const build = () => {
     registerAll: jest.fn().mockResolvedValue({ registered: 2, failed: 0 }),
   };
 
+  const ordersService = {
+    importOrders: jest.fn().mockResolvedValue({ imported: 3, nextCursor: null }),
+  };
+
   const service = new IntegrationJobRunnerService(
     prisma as never,
     integrations as never,
     importService as never,
     pushService as never,
     webhookRegistration as never,
+    ordersService as never,
   );
   return {
     service,
@@ -80,6 +85,7 @@ const build = () => {
     importService,
     pushService,
     webhookRegistration,
+    ordersService,
   };
 };
 

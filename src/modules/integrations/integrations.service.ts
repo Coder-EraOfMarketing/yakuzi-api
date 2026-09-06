@@ -18,7 +18,10 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { EncryptionService } from './encryption.service';
-import { ShopifyProvider } from './providers/shopify.provider';
+import {
+  SHOPIFY_OPTIONAL_SCOPES,
+  ShopifyProvider,
+} from './providers/shopify.provider';
 import { WooCommerceProvider } from './providers/woocommerce.provider';
 import { AmazonProvider } from './providers/amazon.provider';
 import {
@@ -37,6 +40,10 @@ export interface SellerIntegrationView {
   status: IntegrationStatus;
   /** UI-facing health: CONNECTED | SYNCING | PAUSED | ACTION_REQUIRED | DISCONNECTED */
   health: string;
+  /** Permissions an enabled feature needs but this connection lacks. */
+  missingScopes: string[];
+  /** True when the seller must reconnect to grant those permissions. */
+  needsReauthorization: boolean;
   storeName: string | null;
   storeUrl: string | null;
   marketplaceId: string | null;
@@ -470,6 +477,20 @@ export class IntegrationsService {
     if (dto.syncEnabled !== undefined) data.syncEnabled = dto.syncEnabled;
     if (dto.syncProducts !== undefined) data.syncProducts = dto.syncProducts;
     if (dto.syncInventory !== undefined) data.syncInventory = dto.syncInventory;
+    if (dto.syncOrders !== undefined) data.syncOrders = dto.syncOrders;
+    if (dto.syncPrices !== undefined) {
+      // Price export changes what a live storefront charges, so Amazon — where
+      // the offer structure is not implemented — must not advertise it.
+      if (
+        dto.syncPrices &&
+        integration.provider === IntegrationProvider.AMAZON
+      ) {
+        throw new BadRequestException(
+          'Price sync is not available for Amazon yet.',
+        );
+      }
+      data.syncPrices = dto.syncPrices;
+    }
     if (dto.inventoryDirection !== undefined) {
       data.inventoryDirection = dto.inventoryDirection;
     }
@@ -796,12 +817,41 @@ export class IntegrationsService {
    * receives. Credential columns are never referenced here, so no future field
    * addition can accidentally serialise a token.
    */
+  /**
+   * Permissions a feature needs that this connection was not granted.
+   *
+   * Scopes are fixed at authorisation, so switching on order or price sync
+   * later cannot retroactively widen them — the seller has to reconnect. The
+   * UI turns this into a "Reconnect to allow…" prompt instead of a feature
+   * that silently never works.
+   *
+   * Only Shopify has this problem: WooCommerce keys are read_write from the
+   * start, and Amazon permissions are roles on the app rather than per-token
+   * scopes.
+   */
+  missingScopesFor(row: SellerIntegration): string[] {
+    if (row.provider !== IntegrationProvider.SHOPIFY) return [];
+
+    const granted = new Set(row.scopes);
+    const missing: string[] = [];
+    if (row.syncOrders && !granted.has(SHOPIFY_OPTIONAL_SCOPES.orders)) {
+      missing.push(SHOPIFY_OPTIONAL_SCOPES.orders);
+    }
+    if (row.syncPrices && !granted.has(SHOPIFY_OPTIONAL_SCOPES.prices)) {
+      missing.push(SHOPIFY_OPTIONAL_SCOPES.prices);
+    }
+    return missing;
+  }
+
   toSellerView(row: SellerIntegration): SellerIntegrationView {
+    const missingScopes = this.missingScopesFor(row);
     return {
       id: row.id,
       provider: row.provider,
       status: row.status,
       health: this.deriveHealth(row),
+      missingScopes,
+      needsReauthorization: missingScopes.length > 0,
       storeName: row.externalStoreName,
       storeUrl: row.externalStoreUrl,
       marketplaceId: row.marketplaceId,

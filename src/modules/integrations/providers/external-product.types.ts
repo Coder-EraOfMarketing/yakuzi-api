@@ -39,3 +39,35 @@ export interface ExternalProductPage {
   /** Opaque; passed back verbatim. Null on the last page. */
   nextCursor: string | null;
 }
+
+/**
+ * One line of a channel order.
+ *
+ * Note what is absent: no customer name, email, phone or address. Yukizi shows
+ * a seller their own channel sales, which needs none of that, and importing it
+ * would take on a data-protection obligation for another platform's customers.
+ */
+export interface ExternalOrderLine {
+  sku: string | null;
+  title: string | null;
+  quantity: number;
+  price: number;
+}
+
+/** A sale that happened on a connected channel. */
+export interface ExternalOrder {
+  externalOrderId: string;
+  orderNumber: string | null;
+  placedAt: Date;
+  status: string | null;
+  financialStatus: string | null;
+  currency: string | null;
+  totalAmount: number;
+  cancelledAt: Date | null;
+  items: ExternalOrderLine[];
+}
+
+export interface ExternalOrderPage {
+  orders: ExternalOrder[];
+  nextCursor: string | null;
+}

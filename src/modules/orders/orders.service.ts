@@ -17,6 +17,8 @@ import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OtpSmsService } from '../auth/services/otp-sms.service';
 import { SellerOrderNotifierService } from './seller-order-notifier.service';
+import { InventoryService } from '../products/services/inventory.service';
+import { IntegrationEventsService } from '../integrations/integration-events.service';
 
 /**
  * Fields a seller may still write once the admin has locked shipping.
@@ -61,6 +63,10 @@ export class OrdersService {
     private readonly notificationsService: NotificationsService,
     private readonly otpSmsService: OtpSmsService,
     private readonly sellerOrderNotifier: SellerOrderNotifierService,
+    // Appended, never inserted: several specs construct this service
+    // positionally, so changing the existing order would break them silently.
+    private readonly inventoryService: InventoryService,
+    private readonly integrationEvents: IntegrationEventsService,
   ) {}
 
   // ──────────────────────────────────────────────
@@ -346,6 +352,38 @@ export class OrdersService {
    * Only fills blanks — anything the buyer has already saved is left alone, so
    * placing an order can never quietly rewrite their saved details.
    */
+  /**
+   * Queues an inventory push to every sales channel carrying these listings.
+   *
+   * Best-effort by design: `IntegrationEventsService.fanOutYukiziChange` only
+   * creates job rows, so the actual channel calls happen in the background
+   * runner with its own retries. A seller with no connected channels does no
+   * work here beyond one indexed lookup per listing.
+   */
+  private async notifyChannelsOfStockChange(
+    offers: { sellerId: string; sellerOfferId: string }[],
+  ): Promise<void> {
+    if (offers.length === 0) return;
+    // Guarded so a test harness that constructs this service without the
+    // integration dependencies still exercises checkout normally.
+    if (!this.integrationEvents || !this.inventoryService) return;
+
+    // One listing can appear on several lines of the same checkout.
+    const unique = new Map<string, { sellerId: string; sellerOfferId: string }>();
+    for (const offer of offers) unique.set(offer.sellerOfferId, offer);
+
+    for (const offer of unique.values()) {
+      const quantity = await this.inventoryService.getTotalStock(
+        offer.sellerOfferId,
+      );
+      await this.integrationEvents.fanOutYukiziChange(
+        offer.sellerId,
+        offer.sellerOfferId,
+        quantity,
+      );
+    }
+  }
+
   private async syncBuyerContactDetails(userId: string, dto: CreateOrderDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -519,6 +557,11 @@ export class OrdersService {
 
     // 4. Execute transactional checkout (split by seller)
     const sellerOrderPairs: { orderId: string; sellerId: string }[] = [];
+    // Listings whose stock this checkout reduces. Collected here so connected
+    // sales channels can be told AFTER the transaction commits — a Yukizi sale
+    // that never reaches Shopify/WooCommerce/Amazon is how a seller oversells
+    // the same unit twice.
+    const stockChangedOffers: { sellerId: string; sellerOfferId: string }[] = [];
     const order = await this.prisma.$transaction(async (tx) => {
       const createdOrders: any[] = [];
 
@@ -587,6 +630,8 @@ export class OrdersService {
             });
             remaining -= deduct;
           }
+
+          stockChangedOffers.push({ sellerId, sellerOfferId: item.sellerOffer.id });
         }
 
         createdOrders.push(newOrder);
@@ -620,6 +665,22 @@ export class OrdersService {
           );
         });
     }
+
+    // 4f-bis. Tell the seller's connected sales channels that this stock has
+    // moved. Without it a unit sold on Yukizi stays "available" on Shopify,
+    // WooCommerce and Amazon until the next hourly sweep, which is long enough
+    // to sell it again.
+    //
+    // Deliberately outside the transaction and never rethrown, for the same
+    // reason as the notifications above: the buyer has already placed this
+    // order, and a channel being unreachable must not fail it.
+    await this.notifyChannelsOfStockChange(stockChangedOffers).catch((err) => {
+      this.logger.warn(
+        `Could not queue channel inventory updates for checkout by user ${userId}: ${
+          err instanceof Error ? err.message : 'Unknown error'
+        }`,
+      );
+    });
 
     // 4g. Carry the checkout details onto the buyer's profile.
     // The buyer types a phone number and address at checkout, but nothing ever

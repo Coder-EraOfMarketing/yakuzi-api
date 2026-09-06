@@ -28,6 +28,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { IntegrationsService } from './integrations.service';
 import { IntegrationOAuthService } from './integration-oauth.service';
 import { IntegrationImportService } from './integration-import.service';
+import { IntegrationOrdersService } from './integration-orders.service';
 import {
   CheckWooCommerceStoreDto,
   CompleteSetupDto,
@@ -58,6 +59,7 @@ export class IntegrationsController {
     private readonly integrationsService: IntegrationsService,
     private readonly oauthService: IntegrationOAuthService,
     private readonly importService: IntegrationImportService,
+    private readonly ordersService: IntegrationOrdersService,
   ) {}
 
   @Get()
@@ -237,6 +239,23 @@ export class IntegrationsController {
       dto.sellerOfferId,
     );
     return { message: 'Product mapped successfully', data };
+  }
+
+  @Get('orders/external')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Orders placed on connected channels. Never Yukizi orders, and never counted in settlements',
+  })
+  async externalOrders(
+    @CurrentUser('id') userId: string,
+    @Query() query: QueryMappingsDto,
+  ) {
+    const data = await this.ordersService.listOrders(userId, {
+      page: query.page,
+      limit: query.limit,
+    });
+    return { message: 'Channel orders retrieved successfully', data };
   }
 
   @Get('mappings/candidates')
