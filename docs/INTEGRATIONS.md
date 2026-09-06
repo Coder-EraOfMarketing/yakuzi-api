@@ -312,18 +312,76 @@ regardless of what the UI offers.
 
 ---
 
+## Channel orders and price sync (phase 4)
+
+### A Yukizi sale reaches the channels
+
+Checkout decremented `ProductBatch` and told nobody, so a unit sold on Yukizi
+stayed purchasable on every connected channel until the next hourly sweep —
+long enough to sell it twice. `OrdersService` now fans out the post-sale
+quantity after the transaction commits, best-effort and never rethrown, exactly
+like the seller notifications beside it: a channel being unreachable must not
+fail an order the buyer has already placed.
+
+### Channel orders are NOT Yukizi orders
+
+They live in `integration_external_orders`. Two reasons, both load-bearing:
+
+- Seller settlements are computed by querying `order_items`, so a Shopify sale
+  written there would make Yukizi **owe the seller money** for an order it never
+  processed and never collected payment for.
+- `Order.buyerId` is a required FK to `User`, so importing would mean
+  fabricating buyer accounts for another platform's customers.
+
+**No customer PII is stored** — no name, email, phone or address. Yukizi does
+not need it to show a seller their own sales.
+
+**Orders never move stock.** Inventory already arrives as an absolute quantity
+(webhook or sweep), and absolute values are idempotent. Applying an order as a
+delta on top would deduct the same sale twice — once when the channel reports
+the new level, again when the order is imported. Inventory stays the single
+path that moves stock; orders are a reporting surface.
+
+Orders are imported by the hourly sweep. There is no order webhook path, and
+Amazon's `getOrders` allows roughly one request per minute.
+
+### Price sync
+
+Off by default, opt-in per connection. The price sent is
+`finalCustomerPayable` — what a Yukizi buyer actually pays — never `mrp`, which
+would misprice a live storefront by ignoring GST and discounts. A listing with
+no computed price is skipped rather than guessed at.
+
+**Amazon is excluded.** Its `purchasable_offer` structure carries currency,
+audience and date-ranged pricing; half-implementing it mis-prices real listings.
+The API refuses to enable it.
+
+### Shopify scopes are now dynamic
+
+`read_orders` is protected customer data and `write_products` can change what a
+store charges, so neither is in the base set — each is requested only when the
+seller enables the matching feature.
+
+Because scopes are fixed at authorisation, enabling one on an existing
+connection cannot widen them retroactively. `missingScopesFor()` compares the
+stored scopes against what is now needed, and the UI shows "reconnect to allow
+this" instead of a feature that silently never works.
+
+---
+
 ## What is implemented, and what is not
 
-**Phases 1–3 — complete and real:** everything above. Authorization for three
-platforms, encrypted credentials, health checks, catalogue import, SKU matching,
-inventory import and export, the event ledger with loop protection, webhook
-registration and verification, the job runner, and reconciliation.
+**Phases 1–4 — complete and real.** Authorization for three platforms,
+encrypted credentials, health checks, catalogue import, SKU matching, inventory
+import and export, the event ledger with loop protection, webhook registration
+and verification, the job runner, reconciliation, channel order visibility,
+price export, and Yukizi sales propagating to channels.
 
-**Not implemented (phase 4):** order import and price synchronization. Both are
-marked **Coming soon** in the UI, with columns reserved (`syncOrders`,
-`syncPrices`) that no job reads.
+Deliberately absent, with reasons:
 
-Also deliberately absent: Amazon SP-API Notifications (needs an SQS
-destination), and the Feeds API for bulk Amazon updates — the Listings Items
-PATCH is used per listing, which is correct at current catalogue sizes and can
-be swapped for Feeds without touching the mapping model.
+| Not built | Why |
+|---|---|
+| Amazon SP-API Notifications | Needs an SQS destination Yukizi does not operate; the sweep covers it |
+| Amazon price export | `purchasable_offer` is intricate enough that a partial implementation mis-prices live listings |
+| Feeds API for bulk Amazon updates | Per-listing PATCH is correct at current catalogue sizes and swaps in without touching the mapping model |
+| Two-way sync on Amazon | Its only inbound path is the sweep, which cannot tell an echo from a real change |
