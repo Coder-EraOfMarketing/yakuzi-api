@@ -49,6 +49,12 @@ describe('AdminService admin-access rails', () => {
       });
     });
 
+    it('maps the old analytics codes onto the Dashboard tab', () => {
+      // p = View Analytics, q = Manage Analytics - both gated the dashboard.
+      expect(resolve({ permissions: 'p' }).tabs).toEqual({ dashboard: 'view' });
+      expect(resolve({ permissions: 'q' }).tabs).toEqual({ dashboard: 'view' });
+    });
+
     it('lets Manage win over View when both codes are present for one tab', () => {
       // 3 = View Products, 4 = Manage Products
       expect(resolve({ permissions: '34' }).tabs).toEqual({ products: 'full' });

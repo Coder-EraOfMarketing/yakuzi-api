@@ -37,11 +37,10 @@ export function isAccessLevel(value: unknown): value is AccessLevel {
  * One key per tab in the admin sidebar. These strings are the storage format
  * (they end up inside admin_profiles.permissions) so they must not be renamed
  * without a data migration.
- *
- * The Dashboard is deliberately absent: it is every admin's landing page and
- * is always readable, so there is nothing to grant.
  */
 export const TAB_KEYS = [
+  // Overview
+  'dashboard',
   // Catalog
   'products',
   'brands',
@@ -88,11 +87,28 @@ export interface TabGroup {
   tabs: { key: TabKey; label: string }[];
   /** Tabs where `partial` is meaningless - the grant screen offers view/full only. */
   supportsPartial: boolean;
+  /**
+   * Exactly which levels the grant screen should offer. Nothing on the
+   * Dashboard can be edited, so it is view-or-nothing; System has no everyday
+   * tier. Kept alongside supportsPartial rather than replacing it so an admin
+   * app deployed before this field existed keeps rendering correctly.
+   */
+  levels?: AccessLevel[];
   partialMeans?: string;
   fullMeans: string;
 }
 
 export const TAB_GROUPS: TabGroup[] = [
+  {
+    key: 'overview',
+    label: 'Overview',
+    // Revenue, order counts and customer totals live here, so it is granted
+    // like any other section rather than being visible to every admin.
+    supportsPartial: false,
+    levels: ['none', 'view'],
+    fullMeans: 'See the dashboard: revenue, orders, customers and traffic',
+    tabs: [{ key: 'dashboard', label: 'Dashboard' }],
+  },
   {
     key: 'catalog',
     label: 'Catalog',
@@ -158,6 +174,7 @@ export const TAB_GROUPS: TabGroup[] = [
     label: 'System',
     // Nothing here is an "everyday" action, so partial is not offered.
     supportsPartial: false,
+    levels: ['none', 'view', 'full'],
     fullMeans: 'Change platform settings. Granting admin access itself always requires Super Admin.',
     tabs: [
       { key: 'admins', label: 'Admins' },
