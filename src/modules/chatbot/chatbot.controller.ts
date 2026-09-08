@@ -22,6 +22,7 @@ import axios from 'axios';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 
 export class AttachmentDto {
@@ -116,7 +117,7 @@ export class ChatbotController {
 
   @Post('train/extract')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Extract a {trigger, instruction} draft from a sandbox conversation' })
   async trainExtract(@Body() dto: { history: any[] }) {

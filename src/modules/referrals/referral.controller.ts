@@ -14,13 +14,14 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ReferralService } from './referral.service';
 
 @ApiTags('Admin - Referrals')
 @ApiBearerAuth('JWT-auth')
 @Controller('admin/referrals')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class ReferralController {
   constructor(private readonly referralService: ReferralService) {}

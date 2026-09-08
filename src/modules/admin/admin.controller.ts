@@ -22,6 +22,7 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
@@ -49,7 +50,7 @@ import { UpdateSellerProfileDto } from '../sellers/dto/update-seller-profile.dto
 @ApiTags('Admin')
 @ApiBearerAuth('JWT-auth')
 @Controller('admin')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
@@ -570,6 +571,19 @@ export class AdminController {
     return { message: 'Admins retrieved successfully', data };
   }
 
+  // Declared before `admins/:id` so Express does not treat "access-catalog"
+  // as an admin id (the UUID pipe would reject it with a 400).
+  @Get('admins/access-catalog')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Tab groups and access levels for the grant screen' })
+  @ApiResponse({ status: 200, description: 'Access catalog returned' })
+  getAccessCatalog() {
+    return {
+      message: 'Access catalog retrieved',
+      data: this.adminService.getAccessCatalog(),
+    };
+  }
+
   @Get('admins/:id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get admin by ID' })
@@ -597,10 +611,11 @@ export class AdminController {
   @ApiResponse({ status: 200, description: 'Admin updated successfully' })
   @ApiResponse({ status: 404, description: 'Admin not found' })
   async updateAdmin(
+    @CurrentUser('id') actorUserId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: import('./dto/update-admin.dto').UpdateAdminDto,
   ) {
-    const data = await this.adminService.updateAdmin(id, dto);
+    const data = await this.adminService.updateAdmin(actorUserId, id, dto);
     return { message: 'Admin updated successfully', data };
   }
 
@@ -609,8 +624,11 @@ export class AdminController {
   @ApiOperation({ summary: 'Delete an admin' })
   @ApiResponse({ status: 200, description: 'Admin deleted successfully' })
   @ApiResponse({ status: 404, description: 'Admin not found' })
-  async deleteAdmin(@Param('id', ParseUUIDPipe) id: string) {
-    const data = await this.adminService.deleteAdmin(id);
+  async deleteAdmin(
+    @CurrentUser('id') actorUserId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const data = await this.adminService.deleteAdmin(actorUserId, id);
     return { message: 'Admin deleted successfully', data };
   }
 

@@ -23,6 +23,18 @@ import {
   Role,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import {
+  ACCESS_LEVELS,
+  AdminGrants,
+  AccessLevel,
+  SUPER_GRANTS,
+  TAB_GROUPS,
+  TabKey,
+  grantsFromInput,
+  isTabKey,
+  parseAdminGrants,
+  serializeAdminGrants,
+} from '../../common/admin-access';
 import { OrdersService } from '../orders/orders.service';
 import { QueryUsersDto } from './dto/query-users.dto';
 import { AdminQueryProductsDto } from './dto/query-products.dto';
@@ -2333,6 +2345,96 @@ export class AdminService {
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   /**
+   * The letter codes the previous grant screen wrote ("1 3 5 x"), mapped onto
+   * the tab model. Kept so the API can be merged before the admin app is:
+   * while the old screen is still live it keeps sending codes, and they must
+   * mean the same thing they meant yesterday. Analytics codes (p/q) are
+   * dropped because the dashboard is now readable by every admin.
+   */
+  private static readonly LEGACY_PERMISSION_CODES: Record<string, [TabKey, AccessLevel]> = {
+    '1': ['users', 'view'], '2': ['users', 'full'],
+    '3': ['products', 'view'], '4': ['products', 'full'],
+    '5': ['orders', 'view'], '6': ['orders', 'full'],
+    '7': ['orders', 'view'], '8': ['orders', 'full'],
+    '9': ['settlements', 'view'], a: ['settlements', 'full'],
+    b: ['tickets', 'view'], c: ['tickets', 'full'],
+    d: ['suggestions', 'view'], e: ['suggestions', 'full'],
+    f: ['products', 'view'], g: ['products', 'full'],
+    h: ['marketing', 'view'], i: ['marketing', 'full'],
+    j: ['notifications', 'view'], k: ['notifications', 'full'],
+    l: ['marketing', 'view'], m: ['marketing', 'full'],
+    n: ['orders', 'view'], o: ['orders', 'full'],
+    r: ['settings', 'view'], s: ['settings', 'full'],
+    t: ['admins', 'view'], u: ['admins', 'full'],
+    v: ['banners', 'view'], w: ['banners', 'full'],
+  };
+
+  /**
+   * Works out what to store for a create/update.
+   *
+   * Order matters. `access` is what the current grant screen sends. A `v2:`
+   * string is already in storage format. A non-empty legacy string is
+   * translated. Anything else - including an absent or empty value - means
+   * Super Admin, which is exactly what an empty permissions column has always
+   * meant in this system; changing that here would silently strip access from
+   * whoever is edited next.
+   */
+  private resolveGrantsForWrite(dto: {
+    access?: { isSuper?: boolean; tabs?: Record<string, unknown> };
+    permissions?: string;
+  }): AdminGrants {
+    if (dto.access) {
+      const { grants, errors } = grantsFromInput(dto.access);
+      if (errors.length) throw new BadRequestException(errors.join('; '));
+      return grants;
+    }
+
+    const raw = (dto.permissions ?? '').trim();
+    if (!raw) return SUPER_GRANTS;
+    if (raw.startsWith('v2:')) return parseAdminGrants(raw);
+    if (raw.includes('x')) return SUPER_GRANTS;
+
+    const tabs: Partial<Record<TabKey, AccessLevel>> = {};
+    for (const char of raw.toLowerCase()) {
+      const mapped = AdminService.LEGACY_PERMISSION_CODES[char];
+      if (!mapped) continue;
+      const [tab, level] = mapped;
+      // "Manage" beats "View" when both codes are present for one tab.
+      if (tabs[tab] !== 'full') tabs[tab] = level;
+    }
+    return { isSuper: false, tabs };
+  }
+
+  /**
+   * The shape the admin app renders from, so it never has to parse the stored
+   * string itself.
+   */
+  private toAccessPayload(permissions: string | null | undefined) {
+    const grants = parseAdminGrants(permissions);
+    return { isSuper: grants.isSuper, tabs: grants.tabs };
+  }
+
+  /** Tab groups, labels and levels - one source of truth for the grant screen. */
+  getAccessCatalog() {
+    return { levels: ACCESS_LEVELS, groups: TAB_GROUPS };
+  }
+
+  /**
+   * How many Super Admins would remain if `excludeUserId` stopped being one.
+   * Guards the "last super admin" rail: without it, one careless edit locks
+   * every human out of the panel and only a direct database write gets them
+   * back in.
+   */
+  private async countOtherSuperAdmins(excludeUserId: string): Promise<number> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: 'ADMIN', id: { not: excludeUserId } },
+      select: { adminProfile: { select: { permissions: true } } },
+    });
+    return admins.filter((admin) => parseAdminGrants(admin.adminProfile?.permissions).isSuper)
+      .length;
+  }
+
+  /**
    * Get all admins with their profiles and permissions
    */
   async getAdmins() {
@@ -2364,6 +2466,7 @@ export class AdminService {
       name: admin.adminProfile?.displayName || 'Unknown',
       department: admin.adminProfile?.department,
       permissions: admin.adminProfile?.permissions || '',
+      access: this.toAccessPayload(admin.adminProfile?.permissions),
       createdAt: admin.createdAt,
     }));
   }
@@ -2403,15 +2506,17 @@ export class AdminService {
       name: admin.adminProfile?.displayName || 'Unknown',
       department: admin.adminProfile?.department,
       permissions: admin.adminProfile?.permissions || '',
+      access: this.toAccessPayload(admin.adminProfile?.permissions),
       createdAt: admin.createdAt,
     };
   }
 
   /**
-   * Create a new admin with role-based permissions
+   * Create a new admin with tab-level access
    */
   async createAdmin(createAdminDto: any) {
-    const { phone, name, department, permissions } = createAdminDto;
+    const { phone, name, department } = createAdminDto;
+    const permissions = serializeAdminGrants(this.resolveGrantsForWrite(createAdminDto));
 
     // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
@@ -2475,15 +2580,20 @@ export class AdminService {
       name: adminUser.adminProfile?.displayName,
       department: adminUser.adminProfile?.department,
       permissions: adminUser.adminProfile?.permissions || '',
+      access: this.toAccessPayload(adminUser.adminProfile?.permissions),
       createdAt: adminUser.createdAt,
     };
   }
 
   /**
-   * Update admin profile and permissions
+   * Update admin profile and tab-level access.
+   *
+   * `actorUserId` is the admin performing the edit - needed for the rails that
+   * stop the panel being locked out: nobody may drop their own Super Admin
+   * status, and the last Super Admin may not be demoted at all.
    */
-  async updateAdmin(adminId: string, updateAdminDto: any) {
-    const { name, department, permissions } = updateAdminDto;
+  async updateAdmin(actorUserId: string, adminId: string, updateAdminDto: any) {
+    const { name, department } = updateAdminDto;
 
     const admin = await this.prisma.user.findUnique({
       where: { id: adminId },
@@ -2494,6 +2604,30 @@ export class AdminService {
       throw new NotFoundException('Admin not found');
     }
 
+    const changesAccess =
+      updateAdminDto.access !== undefined || updateAdminDto.permissions !== undefined;
+    const permissions = changesAccess
+      ? serializeAdminGrants(this.resolveGrantsForWrite(updateAdminDto))
+      : undefined;
+
+    if (permissions !== undefined) {
+      const wasSuper = parseAdminGrants(admin.adminProfile?.permissions).isSuper;
+      const willBeSuper = parseAdminGrants(permissions).isSuper;
+
+      if (wasSuper && !willBeSuper) {
+        if (actorUserId === adminId) {
+          throw new BadRequestException(
+            'You cannot remove your own Super Admin access. Ask another Super Admin to do it.',
+          );
+        }
+        if ((await this.countOtherSuperAdmins(adminId)) === 0) {
+          throw new BadRequestException(
+            'This is the last Super Admin. Promote someone else to Super Admin first.',
+          );
+        }
+      }
+    }
+
     // Update or create admin profile (using upsert to avoid 500 if profile is missing)
     const updatedAdmin = await this.prisma.adminProfile.upsert({
       where: { userId: adminId },
@@ -2501,7 +2635,9 @@ export class AdminService {
         userId: adminId,
         displayName: name || admin.phone,
         department: department || '',
-        permissions: permissions || '',
+        // No profile row yet and no access specified: match what a missing
+        // profile has always meant here rather than silently locking them out.
+        permissions: permissions ?? serializeAdminGrants(SUPER_GRANTS),
       },
       update: {
         ...(name && { displayName: name }),
@@ -2527,20 +2663,36 @@ export class AdminService {
       name: updatedAdmin.displayName,
       department: updatedAdmin.department,
       permissions: updatedAdmin.permissions || '',
+      access: this.toAccessPayload(updatedAdmin.permissions),
       createdAt: updatedAdmin.user.createdAt,
     };
   }
 
   /**
-   * Delete admin (soft delete by status + remove from admin role)
+   * Delete an admin. Same lockout rails as updateAdmin: you cannot delete
+   * yourself, and the last Super Admin cannot be removed.
    */
-  async deleteAdmin(adminId: string) {
+  async deleteAdmin(actorUserId: string, adminId: string) {
     const admin = await this.prisma.user.findUnique({
       where: { id: adminId },
+      include: { adminProfile: { select: { permissions: true } } },
     });
 
     if (!admin || admin.role !== 'ADMIN') {
       throw new NotFoundException('Admin not found');
+    }
+
+    if (actorUserId === adminId) {
+      throw new BadRequestException('You cannot remove your own admin account.');
+    }
+
+    if (
+      parseAdminGrants(admin.adminProfile?.permissions).isSuper &&
+      (await this.countOtherSuperAdmins(adminId)) === 0
+    ) {
+      throw new BadRequestException(
+        'This is the last Super Admin. Promote someone else to Super Admin first.',
+      );
     }
 
     // Delete the user record completely (cascades to adminProfile and other tables automatically)

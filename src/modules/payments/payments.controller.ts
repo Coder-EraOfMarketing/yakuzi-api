@@ -22,6 +22,7 @@ import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaymentsService } from './payments.service';
@@ -45,7 +46,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(HttpStatus.CREATED)
@@ -65,7 +66,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Post('razorpay/order')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @HttpCode(HttpStatus.CREATED)
@@ -82,7 +83,7 @@ export class PaymentsController {
   }
 
   @Post('razorpay/verify')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
@@ -124,7 +125,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Post(':id/proof')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Upload payment proof screenshot/receipt' })
@@ -139,7 +140,7 @@ export class PaymentsController {
   }
 
   @Post('order/:orderId/proof')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Upload payment proof by order ID' })
@@ -162,7 +163,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Get('order/:orderId')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get payment history for an order' })
@@ -180,7 +181,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Patch(':id/confirm')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
@@ -196,7 +197,7 @@ export class PaymentsController {
   // ──────────────────────────────────────────────
 
   @Patch(':id/reject')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Reject a payment (admin)' })

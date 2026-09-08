@@ -18,6 +18,7 @@ import {
 } from './brands.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
@@ -34,7 +35,7 @@ export class BrandsController {
 }
 
 @Controller('admin/brands')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class AdminBrandsController {
   constructor(private readonly brandsService: BrandsService) {}

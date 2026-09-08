@@ -22,6 +22,7 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -38,7 +39,7 @@ import { ReplaceBannersDto } from './dto/replace-banners.dto';
 @ApiTags('Admin - Categories')
 @ApiBearerAuth('JWT-auth')
 @Controller('admin')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}

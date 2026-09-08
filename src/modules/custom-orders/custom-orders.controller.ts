@@ -13,12 +13,13 @@ import { CustomOrdersService } from './custom-orders.service';
 import { CreateCustomOrderDto } from './dto/create-custom-order.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '@prisma/client';
 
 @Controller('custom-orders')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 export class CustomOrdersController {
   constructor(private readonly customOrdersService: CustomOrdersService) {}
 

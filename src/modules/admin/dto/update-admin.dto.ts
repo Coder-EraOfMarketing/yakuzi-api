@@ -1,4 +1,4 @@
-import { IsString, IsOptional, Length } from 'class-validator';
+import { IsString, IsOptional, Length, IsObject } from 'class-validator';
 
 export class UpdateAdminDto {
   @IsOptional()
@@ -10,7 +10,13 @@ export class UpdateAdminDto {
   @IsString()
   department?: string;
 
+  /** See CreateAdminDto - same shape, same validation path. */
+  @IsOptional()
+  @IsObject()
+  access?: { isSuper?: boolean; tabs?: Record<string, string> };
+
+  /** Legacy grant format; `access` wins if both are sent. */
   @IsOptional()
   @IsString()
-  permissions?: string; // Space-separated codes: "1 3 5 7 x"
+  permissions?: string;
 }

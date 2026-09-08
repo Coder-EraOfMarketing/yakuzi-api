@@ -20,6 +20,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { StorageService } from './storage.service';
 import { memoryStorage } from 'multer';
@@ -44,7 +45,7 @@ export class StorageController {
   constructor(private readonly storageService: StorageService) {}
 
   @Post('product-image')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.ADMIN)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -71,7 +72,7 @@ export class StorageController {
   }
 
   @Post('drug-license')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.BUYER, Role.ADMIN)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -88,7 +89,7 @@ export class StorageController {
   }
 
   @Post('payment-proof')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -105,7 +106,7 @@ export class StorageController {
   }
 
   @Post('kyc')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER, Role.SELLER)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -129,7 +130,7 @@ export class StorageController {
   }
 
   @Post('blog-image')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -143,7 +144,7 @@ export class StorageController {
   }
 
   @Post('settlement-proof')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @UseInterceptors(FileInterceptor('file', multerOptions))
   @HttpCode(HttpStatus.CREATED)
@@ -157,7 +158,7 @@ export class StorageController {
   }
 
   @Post('order-document')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.ADMIN)
   @UseInterceptors(FileInterceptor('file'))
   @HttpCode(HttpStatus.CREATED)
@@ -171,7 +172,7 @@ export class StorageController {
   }
 
   @Post('view')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER, Role.SELLER, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -184,7 +185,7 @@ export class StorageController {
   }
 
   @Post('upload-url')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Generate S3 presigned URL for direct upload' })

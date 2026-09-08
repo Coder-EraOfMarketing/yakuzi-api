@@ -16,6 +16,7 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../database/prisma.service';
+import { parseAdminGrants } from '../../common/admin-access';
 import { REDIS_CLIENT } from '../../config/redis.config';
 import { Role, UserStatus } from '@prisma/client';
 import { OtpSmsService } from './services/otp-sms.service';
@@ -891,6 +892,21 @@ export class AuthService {
 
     if (!user) {
       throw new UnauthorizedException('User not found');
+    }
+
+    // The admin panel decides which tabs and buttons to render from this.
+    // Parsed here so the client never has to know the storage format, and so
+    // a legacy permissions string reads as Super Admin on the client exactly
+    // as it does in AdminAccessGuard.
+    if (user.adminProfile) {
+      const grants = parseAdminGrants(user.adminProfile.permissions);
+      return {
+        ...user,
+        adminProfile: {
+          ...user.adminProfile,
+          access: { isSuper: grants.isSuper, tabs: grants.tabs },
+        },
+      };
     }
 
     return user;
