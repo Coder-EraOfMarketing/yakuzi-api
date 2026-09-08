@@ -2,6 +2,7 @@ import { BadRequestException, Controller, Get, Header, Param, Query, UseGuards }
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ReportRange, WebAnalyticsReportsService } from './web-analytics-reports.service';
 
@@ -27,7 +28,7 @@ function toCsv(rows: Array<Record<string, unknown>>): string {
 }
 
 @Controller('admin/analytics')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class WebAnalyticsAdminController {
   constructor(private readonly reports: WebAnalyticsReportsService) {}

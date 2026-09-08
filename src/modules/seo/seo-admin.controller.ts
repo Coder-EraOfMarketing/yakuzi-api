@@ -18,6 +18,7 @@ import { KeywordType, Role, SeoEntityType, SeoNotFoundStatus } from '@prisma/cli
 import { ImageRenameService } from './image-rename.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SeoService } from './seo.service';
@@ -48,7 +49,7 @@ function parseEntityType(value: string): SeoEntityType {
 }
 
 @Controller('admin/seo')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class AdminSeoController {
   constructor(

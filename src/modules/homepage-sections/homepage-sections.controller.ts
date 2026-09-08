@@ -19,6 +19,7 @@ import {
 } from './homepage-sections.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
@@ -35,7 +36,7 @@ export class HomepageSectionsController {
 }
 
 @Controller('admin/homepage-sections')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class AdminHomepageSectionsController {
   constructor(private readonly homepageSectionsService: HomepageSectionsService) {}

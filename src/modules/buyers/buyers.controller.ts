@@ -18,6 +18,7 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { BuyersService } from './buyers.service';
@@ -27,7 +28,7 @@ import { UpdateBuyerProfileDto } from './dto/update-buyer-profile.dto';
 @ApiTags('Buyers')
 @ApiBearerAuth('JWT-auth')
 @Controller('buyers')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 export class BuyersController {
   constructor(private readonly buyersService: BuyersService) {}
 

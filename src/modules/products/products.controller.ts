@@ -21,6 +21,7 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProductsService } from './products.service';
@@ -41,7 +42,7 @@ export class ProductsController {
   // ──────────────────────────────────────────────
 
   @Post('requests')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.BUYER)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth('JWT-auth')
@@ -58,7 +59,7 @@ export class ProductsController {
   }
 
   @Get('my-requests')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER, Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -84,7 +85,7 @@ export class ProductsController {
   }
 
   @Get('requests')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -106,7 +107,7 @@ export class ProductsController {
   }
 
   @Patch('requests/:id/status')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -203,7 +204,7 @@ export class ProductsController {
   // ──────────────────────────────────────────────
 
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth('JWT-auth')
@@ -219,7 +220,7 @@ export class ProductsController {
   }
 
   @Post('bulk')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth('JWT-auth')
@@ -236,7 +237,7 @@ export class ProductsController {
   }
 
   @Get('seller/own')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -251,7 +252,7 @@ export class ProductsController {
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -267,7 +268,7 @@ export class ProductsController {
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -281,7 +282,7 @@ export class ProductsController {
   // WAITLIST FEATURE
 
   @Get('waitlist/me')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -293,7 +294,7 @@ export class ProductsController {
   }
 
   @Post(':id/notify-me')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth('JWT-auth')
@@ -309,7 +310,7 @@ export class ProductsController {
   }
 
   @Delete(':id/notify-me')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.BUYER)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')

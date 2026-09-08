@@ -25,6 +25,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { OrdersService } from './orders.service';
@@ -39,7 +40,7 @@ import { UpdateShippingDetailsDto } from './dto/update-shipping-details.dto';
 @ApiTags('Orders')
 @ApiBearerAuth('JWT-auth')
 @Controller('orders')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 export class OrdersController {
   private readonly logger = new Logger(OrdersController.name);
 

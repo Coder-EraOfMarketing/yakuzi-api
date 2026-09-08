@@ -22,6 +22,7 @@ import {
 } from './banners.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { StorageService } from '../storage/storage.service';
@@ -39,7 +40,7 @@ export class BannersController {
 }
 
 @Controller('admin/banners')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class AdminBannersController {
   constructor(

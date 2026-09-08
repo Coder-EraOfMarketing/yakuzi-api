@@ -20,6 +20,7 @@ import { CreateReviewDto } from './dto/create-review.dto';
 import { QueryAdminReviewsDto, QuerySellerReviewsDto } from './dto/query-reviews.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '@prisma/client';
@@ -61,7 +62,7 @@ export class ReviewsController {
   }
 
   @Get('admin')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get all reviews (admin)' })
@@ -71,7 +72,7 @@ export class ReviewsController {
   }
 
   @Get('seller')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.SELLER)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: "Reviews for the signed-in seller's own listings" })
@@ -83,7 +84,7 @@ export class ReviewsController {
   }
 
   @Delete('admin/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
   @Roles(Role.ADMIN)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Delete a review (admin)' })

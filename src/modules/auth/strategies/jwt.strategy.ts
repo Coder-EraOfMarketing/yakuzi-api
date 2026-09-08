@@ -38,6 +38,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         status: true,
         createdAt: true,
         updatedAt: true,
+        // Loaded here so AdminAccessGuard can decide a request's tab access
+        // without a second query per request. Buyers and sellers get null.
+        adminProfile: { select: { permissions: true } },
       },
     });
 

@@ -22,6 +22,7 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BlogService } from './blog.service';
 import {
@@ -38,7 +39,7 @@ import {
 @ApiTags('Admin / Blog')
 @ApiBearerAuth('JWT-auth')
 @Controller('admin/blogs')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class BlogAdminController {
   constructor(private readonly blogService: BlogService) {}

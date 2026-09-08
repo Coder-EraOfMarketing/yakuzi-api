@@ -20,6 +20,7 @@ import {
 import { MigrationEntityType } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { MigrationService } from './migration.service';
@@ -30,7 +31,7 @@ import { MigratePaymentsDto } from './dto/migrate-payments.dto';
 @ApiTags('Migration')
 @ApiBearerAuth('JWT-auth')
 @Controller('migration')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminAccessGuard)
 @Roles(Role.ADMIN)
 export class MigrationController {
   constructor(private readonly migrationService: MigrationService) {}
