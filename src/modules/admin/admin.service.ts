@@ -2348,8 +2348,8 @@ export class AdminService {
    * The letter codes the previous grant screen wrote ("1 3 5 x"), mapped onto
    * the tab model. Kept so the API can be merged before the admin app is:
    * while the old screen is still live it keeps sending codes, and they must
-   * mean the same thing they meant yesterday. Analytics codes (p/q) are
-   * dropped because the dashboard is now readable by every admin.
+   * mean the same thing they meant yesterday. The analytics codes (p/q) map
+   * to the Dashboard tab, which is what they gated.
    */
   private static readonly LEGACY_PERMISSION_CODES: Record<string, [TabKey, AccessLevel]> = {
     '1': ['users', 'view'], '2': ['users', 'full'],
@@ -2364,6 +2364,7 @@ export class AdminService {
     j: ['notifications', 'view'], k: ['notifications', 'full'],
     l: ['marketing', 'view'], m: ['marketing', 'full'],
     n: ['orders', 'view'], o: ['orders', 'full'],
+    p: ['dashboard', 'view'], q: ['dashboard', 'view'],
     r: ['settings', 'view'], s: ['settings', 'full'],
     t: ['admins', 'view'], u: ['admins', 'full'],
     v: ['banners', 'view'], w: ['banners', 'full'],

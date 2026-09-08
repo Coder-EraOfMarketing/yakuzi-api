@@ -130,9 +130,24 @@ describe('admin route map', () => {
     });
   });
 
-  it('leaves the dashboard and its analytics open to every admin', () => {
-    expect(resolveAdminRoute('GET', '/api/admin/dashboard')).toEqual({ kind: 'allow' });
-    expect(resolveAdminRoute('GET', '/api/admin/analytics/revenue')).toEqual({ kind: 'allow' });
+  it('gates the dashboard and its analytics behind the Dashboard tab', () => {
+    // Revenue and customer totals are not something every admin should see.
+    expect(resolveAdminRoute('GET', '/api/admin/dashboard')).toEqual({
+      kind: 'tab',
+      tab: 'dashboard',
+      required: 'view',
+    });
+    expect(resolveAdminRoute('GET', '/api/admin/analytics/revenue')).toEqual({
+      kind: 'tab',
+      tab: 'dashboard',
+      required: 'view',
+    });
+  });
+
+  it("leaves an admin's own notification list open", () => {
+    expect(resolveAdminRoute('GET', '/api/admin/notifications/broadcasts/me')).toEqual({
+      kind: 'allow',
+    });
   });
 
   it('reserves admin management and data migration for super admins', () => {

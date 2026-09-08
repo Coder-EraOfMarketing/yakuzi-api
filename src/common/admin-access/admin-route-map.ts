@@ -40,13 +40,16 @@ const WRITE = ['POST', 'PATCH', 'PUT', 'DELETE'];
 
 const RULES: RouteRule[] = [
   // ── Always available to any admin ────────────────────────────────────────
-  // The dashboard is the landing page, and its analytics widgets come from
-  // /admin/analytics; blocking either would leave a restricted admin staring
-  // at an error the moment they log in.
+  // Only an admin's own notification list; everything else is granted.
   { pattern: /^\/admin\/?$/, allowAll: true },
-  { pattern: /^\/admin\/dashboard(\/|$)/, allowAll: true },
-  { pattern: /^\/admin\/analytics(\/|$)/, allowAll: true },
   { pattern: /^\/admin\/notifications\/broadcasts\/me$/, allowAll: true },
+
+  // ── Overview ─────────────────────────────────────────────────────────────
+  // The dashboard reports revenue, order counts and customer totals, and its
+  // widgets are fed by /admin/analytics, so both need the same grant. An admin
+  // without it lands on their first accessible section instead.
+  { pattern: /^\/admin\/dashboard(\/|$)/, tab: 'dashboard' },
+  { pattern: /^\/admin\/analytics(\/|$)/, tab: 'dashboard' },
 
   // Uploads are a shared utility behind half the tabs (product images, banner
   // art, blog covers). Gate them on "can write somewhere" rather than on any
