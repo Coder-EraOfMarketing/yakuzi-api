@@ -9,6 +9,7 @@ import {
   Matches,
   ValidateIf,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateBuyerProfileDto {
@@ -87,9 +88,21 @@ export class UpdateBuyerProfileDto {
   @IsObject()
   address?: Record<string, any>;
 
+  /**
+   * `@Type(() => Object)` is load-bearing, not decoration.
+   *
+   * main.ts builds the global pipe with `transform: true` and
+   * `enableImplicitConversion: true`, and a property whose only reflected type
+   * is `Array` has that type applied to its ELEMENTS as well: each licence was
+   * constructed as an Array and, having no numeric keys, arrived as `[]`. A
+   * body of `[{ number, expiry }]` reached the service as `[[]]`, so every
+   * licence detail was dropped on save with no error. Naming the element type
+   * is what stops the coercion; the rows stay free-form JSON.
+   */
   @ApiPropertyOptional({ description: 'Drug licence details array' })
   @IsOptional()
   @IsArray()
+  @Type(() => Object)
   licence?: Record<string, any>[];
 
   @ApiPropertyOptional({ description: 'Bank account details' })
