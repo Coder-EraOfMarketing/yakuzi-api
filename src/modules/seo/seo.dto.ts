@@ -14,6 +14,30 @@ import {
 import { Type } from 'class-transformer';
 import { KeywordType, SeoEntityType, SeoNotFoundStatus } from '@prisma/client';
 
+/**
+ * One FAQ row. A real class, not an inline `{ question, answer }` type.
+ *
+ * The global pipe runs with `transform: true` and `enableImplicitConversion`,
+ * and a property whose only reflected type is `Array` has that same type
+ * applied to its ELEMENTS. Every entry was therefore constructed as an Array
+ * and, having no numeric keys, arrived as `[]`: four typed questions reached
+ * the database as `[[], [], [], []]`. The text was destroyed inside the pipe,
+ * before the service or Prisma ever saw it, so nothing rendered on the
+ * storefront, no FAQPage JSON-LD was emitted, and the AI-visibility score
+ * never counted an FAQ. `@Type` is what stops the elements being coerced.
+ */
+export class SeoFaqEntryDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(300)
+  question!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  answer!: string;
+}
+
 export class UpsertSeoMetaDto {
   @IsEnum(SeoEntityType)
   entityType!: SeoEntityType;
@@ -80,7 +104,9 @@ export class UpsertSeoMetaDto {
   /** [{question, answer}] — rendered as visible FAQ + FAQPage JSON-LD. */
   @IsOptional()
   @IsArray()
-  faq?: Array<{ question: string; answer: string }>;
+  @ValidateNested({ each: true })
+  @Type(() => SeoFaqEntryDto)
+  faq?: SeoFaqEntryDto[];
 
   /** Merged over the generated JSON-LD by the frontend. */
   @IsOptional()

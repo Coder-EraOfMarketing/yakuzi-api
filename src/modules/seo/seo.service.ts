@@ -7,8 +7,23 @@ import {
   computeAiVisibilityScore,
   computeReadabilityScore,
   computeSeoScore,
+  validFaqEntries,
 } from './seo-scoring';
 import { ListSeoMetaQueryDto, UpsertSeoMetaDto } from './seo.dto';
+
+/**
+ * Drops FAQ rows that carry no question or answer.
+ *
+ * Records written before SeoFaqEntryDto hold one empty array per row the admin
+ * typed. Left alone, the SEO editor reloads them as that many blank Q/A boxes
+ * — and its save handler reads `row.question.trim()`, which throws on them.
+ * Reads return only rows a page could actually render.
+ */
+function withCleanFaq<T extends { faq?: unknown }>(meta: T): T {
+  if (meta.faq == null) return meta;
+  const clean = validFaqEntries(meta.faq);
+  return { ...meta, faq: clean.length ? clean : null };
+}
 
 /** The admin-editable scalar fields — also what a revision restore brings back. */
 const EDITABLE_FIELDS = [
@@ -68,9 +83,10 @@ export class SeoService {
 
   /** Public read. Null when no override exists — callers merge fail-open. */
   async getMeta(entityType: SeoEntityType, entityId: string) {
-    return this.prisma.seoMeta.findUnique({
+    const meta = await this.prisma.seoMeta.findUnique({
       where: { entityType_entityId: { entityType, entityId } },
     });
+    return meta && withCleanFaq(meta);
   }
 
   async upsertMeta(dto: UpsertSeoMetaDto, userId?: string) {
@@ -97,10 +113,10 @@ export class SeoService {
           data: { ...fields, ...scores, updatedById: userId ?? null },
         }),
       ]);
-      return updated;
+      return withCleanFaq(updated);
     }
 
-    return this.prisma.seoMeta.create({
+    const created = await this.prisma.seoMeta.create({
       data: {
         entityType,
         entityId,
@@ -109,6 +125,7 @@ export class SeoService {
         updatedById: userId ?? null,
       } as Prisma.SeoMetaUncheckedCreateInput,
     });
+    return withCleanFaq(created);
   }
 
   async listMeta(query: ListSeoMetaQueryDto) {
@@ -173,6 +190,12 @@ export class SeoService {
     for (const key of EDITABLE_FIELDS) {
       if (key in snapshot) fields[key] = snapshot[key];
     }
+    // Snapshots taken before SeoFaqEntryDto hold the flattened rows; restoring
+    // one verbatim would write them back into the live record.
+    if ('faq' in fields && fields.faq != null) {
+      const clean = validFaqEntries(fields.faq);
+      fields.faq = clean.length ? clean : Prisma.DbNull;
+    }
     const scores = this.computeScores({ ...meta, ...fields });
 
     const [, updated] = await this.prisma.$transaction([
@@ -188,7 +211,7 @@ export class SeoService {
         data: { ...fields, ...scores, updatedById: userId ?? null },
       }),
     ]);
-    return updated;
+    return withCleanFaq(updated);
   }
 
   /** Trim strings; store '' as null so `missing=` coverage filters stay truthful. */
@@ -198,7 +221,17 @@ export class SeoService {
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(raw)) {
       if (value === undefined) continue;
-      if (typeof value === 'string') {
+      if (key === 'faq') {
+        // Only rows a page can render are stored. class-validator lets an
+        // array-shaped entry through @ValidateNested, so this is the guarantee
+        // that the column never collects blank rows again; an empty result is
+        // the admin clearing the FAQ, which is DbNull rather than [].
+        const clean = validFaqEntries(value).map((f) => ({
+          question: f.question.trim(),
+          answer: f.answer.trim(),
+        }));
+        out[key] = clean.length ? clean : Prisma.DbNull;
+      } else if (typeof value === 'string') {
         const trimmed = value.trim();
         out[key] = trimmed === '' ? null : trimmed;
       } else {

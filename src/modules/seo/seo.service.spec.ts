@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { SeoEntityType } from '@prisma/client';
+import { Prisma, SeoEntityType } from '@prisma/client';
 import { SeoService } from './seo.service';
 
 describe('SeoService', () => {
@@ -99,6 +99,60 @@ describe('SeoService', () => {
     it('returns null (not 404) when there is no override — buyer merges fail-open', async () => {
       prisma.seoMeta.findUnique.mockResolvedValue(null);
       await expect(service.getMeta(SeoEntityType.PRODUCT, 'nope')).resolves.toBeNull();
+    });
+
+    it('serves stored FAQ rows untouched', async () => {
+      const faq = [{ question: 'In stock?', answer: 'Yes, ships in 48 hours.' }];
+      prisma.seoMeta.findUnique.mockResolvedValue({ id: 'meta-1', faq });
+
+      const meta = await service.getMeta(SeoEntityType.PRODUCT, 'prod-1');
+
+      expect(meta?.faq).toEqual(faq);
+    });
+
+    it('hides the flattened rows written before the DTO carried @Type()', async () => {
+      // What the live records actually hold: one empty array per row typed.
+      prisma.seoMeta.findUnique.mockResolvedValue({ id: 'meta-1', faq: [[], [], []] });
+
+      const meta = await service.getMeta(SeoEntityType.PRODUCT, 'prod-1');
+
+      // Not `[]`: the editor would render three blank Q/A boxes and its save
+      // handler reads row.question.trim() on them.
+      expect(meta?.faq).toBeNull();
+    });
+  });
+
+  describe('upsertMeta FAQ handling', () => {
+    it('stores well-formed entries', async () => {
+      const faq = [{ question: 'In stock?', answer: 'Yes, ships in 48 hours.' }];
+      prisma.seoMeta.findUnique.mockResolvedValue(null);
+      prisma.seoMeta.create.mockImplementation(({ data }: { data: unknown }) =>
+        Promise.resolve(data),
+      );
+
+      await service.upsertMeta({
+        entityType: SeoEntityType.PRODUCT,
+        entityId: 'prod-1',
+        faq,
+      });
+
+      expect(prisma.seoMeta.create.mock.calls[0][0].data.faq).toEqual(faq);
+    });
+
+    it('never writes rows without a question and an answer', async () => {
+      prisma.seoMeta.findUnique.mockResolvedValue(null);
+      prisma.seoMeta.create.mockImplementation(({ data }: { data: unknown }) =>
+        Promise.resolve(data),
+      );
+
+      await service.upsertMeta({
+        entityType: SeoEntityType.PRODUCT,
+        entityId: 'prod-1',
+        faq: [{ question: 'Orphan question', answer: '  ' }] as never,
+      });
+
+      // DbNull, not []: a nullable Json column needs the sentinel.
+      expect(prisma.seoMeta.create.mock.calls[0][0].data.faq).toBe(Prisma.DbNull);
     });
   });
 
