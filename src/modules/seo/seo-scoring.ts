@@ -14,17 +14,36 @@ export interface ScorableMeta {
   faq?: unknown;
 }
 
-export function faqCount(faq: unknown): number {
-  if (!Array.isArray(faq)) return 0;
+export interface FaqEntry {
+  question: string;
+  answer: string;
+}
+
+/**
+ * The well-formed rows of a stored `faq` value, in order.
+ *
+ * Stored FAQs are not all trustworthy: rows saved before the DTO carried
+ * `@Type()` were flattened to `[]` by the validation pipe (see SeoFaqEntryDto),
+ * so live records hold shapes like `[[], [], [], []]`. Reads run through here
+ * so those never reach an editor as blank rows or a page as empty questions.
+ * Mirrors validFaqs() on the storefront.
+ */
+export function validFaqEntries(faq: unknown): FaqEntry[] {
+  if (!Array.isArray(faq)) return [];
   return faq.filter(
-    (f) =>
-      f &&
+    (f): f is FaqEntry =>
+      !!f &&
       typeof f === 'object' &&
+      !Array.isArray(f) &&
       typeof (f as { question?: unknown }).question === 'string' &&
       (f as { question: string }).question.trim() !== '' &&
       typeof (f as { answer?: unknown }).answer === 'string' &&
       (f as { answer: string }).answer.trim() !== '',
-  ).length;
+  );
+}
+
+export function faqCount(faq: unknown): number {
+  return validFaqEntries(faq).length;
 }
 
 /**
