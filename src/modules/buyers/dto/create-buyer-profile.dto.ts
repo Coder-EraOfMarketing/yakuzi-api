@@ -8,6 +8,7 @@ import {
   Matches,
   ValidateIf,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateBuyerProfileDto {
@@ -121,8 +122,12 @@ export class CreateBuyerProfileDto {
       },
     ],
   })
+  // @Type(() => Object) is load-bearing — see UpdateBuyerProfileDto.licence.
+  // Without it the pipe's implicit conversion rebuilds every licence as an
+  // empty array, and the example above saves as [[]].
   @IsOptional()
   @IsArray()
+  @Type(() => Object)
   licence?: Record<string, any>[];
 
   @ApiPropertyOptional({
