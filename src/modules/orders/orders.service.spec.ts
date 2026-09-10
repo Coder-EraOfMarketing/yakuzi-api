@@ -638,6 +638,12 @@ describe('OrdersService.checkout — price integrity', () => {
       cartItem: { deleteMany: jest.fn().mockResolvedValue({ count: items.length }) },
     };
     const prisma = {
+      // checkout() checks the typed contact details against other accounts
+      // before it touches the cart. Nothing is held by anyone else here.
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ phone: '9008336683', email: 'buyer@example.com' }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       cart: {
         findUnique: jest.fn().mockResolvedValue({ id: 'cart-1', items }),
       },
@@ -1123,6 +1129,12 @@ describe('OrdersService.checkout — fulfillmentMode snapshot', () => {
       cartItem: { deleteMany: jest.fn().mockResolvedValue({ count: items.length }) },
     };
     const prisma = {
+      // checkout() checks the typed contact details against other accounts
+      // before it touches the cart. Nothing is held by anyone else here.
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ phone: '9008336683', email: 'buyer@example.com' }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       cart: { findUnique: jest.fn().mockResolvedValue({ id: 'cart-1', items }) },
       buyerProfile: { findUnique: jest.fn().mockResolvedValue({ referralCodeId: null }) },
       $transaction: jest.fn().mockImplementation((cb: any) => cb(tx)),
@@ -1475,5 +1487,91 @@ describe('OrdersService.submitSelfShipTracking — admin email', () => {
         trackingUrl: 'https://track/1',
       } as never),
     ).resolves.toBeDefined();
+  });
+});
+
+/**
+ * A buyer typing contact details that belong to somebody else's account used
+ * to have them silently ignored: the order went through, they were never
+ * told, and their account stayed blank — which is also how their orders ended
+ * up invisible in the admin. Now they are told, before anything is charged.
+ */
+describe('OrdersService.checkout — contact details already registered', () => {
+  const buildGuard = (
+    account: { phone?: string | null; email?: string | null },
+    heldByOther: { phone?: boolean; email?: boolean } = {},
+  ) => {
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          phone: account.phone ?? null,
+          email: account.email ?? null,
+        }),
+        findFirst: jest.fn().mockImplementation(({ where }: any) =>
+          Promise.resolve(
+            (where.phone && heldByOther.phone) || (where.email && heldByOther.email)
+              ? { id: 'someone-else' }
+              : null,
+          ),
+        ),
+      },
+      cart: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new OrdersService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const guard = (
+      service as unknown as {
+        assertContactDetailsAreClaimable(u: string, d: CreateOrderDto): Promise<void>;
+      }
+    ).assertContactDetailsAreClaimable.bind(service);
+    return { guard, prisma };
+  };
+
+  it('stops a phone-only conflict with a message naming what to do', async () => {
+    // Signed in with Google: no phone on the account, and the number typed at
+    // checkout belongs to somebody else.
+    const { guard } = buildGuard({ phone: null, email: 'buyer@example.com' }, { phone: true });
+
+    await expect(guard('user-1', dto())).rejects.toThrow(/already registered/i);
+    await expect(guard('user-1', dto())).rejects.toThrow(/different number/i);
+  });
+
+  it('stops an email conflict for a buyer who signed in by phone', async () => {
+    const { guard } = buildGuard({ phone: '9000000000', email: null }, { email: true });
+
+    await expect(guard('user-1', dto())).rejects.toThrow(/different email/i);
+  });
+
+  it('lets the order through when nothing is held by anyone else', async () => {
+    const { guard } = buildGuard({ phone: null, email: null });
+
+    await expect(guard('user-1', dto())).resolves.toBeUndefined();
+  });
+
+  it('lets a buyer with their own number on file deliver to someone else', async () => {
+    // Sending a gift to a friend: the friend's number is on their own account,
+    // and that must keep working — nothing is being claimed here.
+    const { guard, prisma } = buildGuard(
+      { phone: '9111111111', email: 'buyer@example.com' },
+      { phone: true, email: true },
+    );
+
+    await expect(guard('user-1', dto())).resolves.toBeUndefined();
+    // Not even looked up: there is nothing to claim.
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not trip on the buyer re-entering their own details', async () => {
+    const { guard } = buildGuard({ phone: '9008336683', email: 'buyer@example.com' });
+
+    await expect(guard('user-1', dto())).resolves.toBeUndefined();
   });
 });

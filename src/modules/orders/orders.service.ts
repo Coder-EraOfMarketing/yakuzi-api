@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
@@ -519,7 +520,65 @@ export class OrdersService {
     });
   }
 
+  /**
+   * Stops a checkout whose contact details belong to somebody else's account,
+   * and says so, instead of taking the order and quietly ignoring them.
+   *
+   * User.phone and User.email are unique — they are login identifiers. When a
+   * buyer has neither on file (a Google sign-in has no phone; a phone-OTP
+   * sign-in has no email), checkout tries to claim what they type. If another
+   * account already holds it the claim cannot happen, and until now the order
+   * went through anyway: the buyer was never told, and their account stayed
+   * blank.
+   *
+   * Only checked when the account does NOT already hold that detail. A buyer
+   * with their own number on file is free to enter someone else's as the
+   * delivery contact — sending a gift to a friend must keep working.
+   */
+  private async assertContactDetailsAreClaimable(
+    userId: string,
+    dto: CreateOrderDto,
+  ): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phone: true, email: true },
+    });
+    if (!user) return;
+
+    const phone = dto.phone?.trim();
+    if (!user.phone?.trim() && phone) {
+      const taken = await this.prisma.user.findFirst({
+        where: { phone, NOT: { id: userId } },
+        select: { id: true },
+      });
+      if (taken) {
+        throw new ConflictException(
+          'This mobile number is already registered to another Yukizi account. ' +
+            'Please use a different number, or sign in with that number instead.',
+        );
+      }
+    }
+
+    const email = dto.email?.trim().toLowerCase();
+    if (!user.email?.trim() && email) {
+      const taken = await this.prisma.user.findFirst({
+        where: { email, NOT: { id: userId } },
+        select: { id: true },
+      });
+      if (taken) {
+        throw new ConflictException(
+          'This email address is already registered to another Yukizi account. ' +
+            'Please use a different email, or sign in with that address instead.',
+        );
+      }
+    }
+  }
+
   async checkout(userId: string, dto: CreateOrderDto) {
+    // Before anything is reserved or charged: if the details they typed belong
+    // to someone else's account, tell them now rather than after payment.
+    await this.assertContactDetailsAreClaimable(userId, dto);
+
     // 1. Fetch buyer cart with items + product + seller + batches
     const cart = await this.prisma.cart.findUnique({
       where: { userId },
