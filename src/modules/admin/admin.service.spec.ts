@@ -7,6 +7,11 @@ import { OrderStatus, PaymentStatus, Role } from '@prisma/client';
 // behavior unless a specific test overrides `get` for its own key.
 const mockConfigService = { get: jest.fn().mockReturnValue(undefined) };
 
+// Marking a settlement paid now emails the seller their commission invoice.
+// Fire-and-forget, so every harness just needs something callable.
+const payoutEmailStub = { settlementPaid: jest.fn().mockResolvedValue(undefined) };
+
+
 const baseOrder = {
   id: 'order-1',
   orderStatus: OrderStatus.PAYMENT_RECEIVED,
@@ -39,6 +44,7 @@ const build = (pushResult: Record<string, unknown> = {}) => {
     {} as never,
     {} as never,
     mockConfigService as never,
+    payoutEmailStub as never,
   );
   return { service, prisma, ordersService };
 };
@@ -117,6 +123,7 @@ describe('AdminService.adminUpdateProduct — catalog product resolution', () =>
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -193,6 +200,7 @@ describe('AdminService.getSettlementsSummary — totals across all pages', () =>
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -268,6 +276,7 @@ describe('AdminService.getAllSettlements — pagination priority', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -426,6 +435,7 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -512,6 +522,7 @@ describe('AdminService.approveUser — seller approval email', () => {
       mailService as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, mailService };
   };
@@ -601,6 +612,7 @@ describe('AdminService.adminCreateProductForSeller', () => {
       {} as never,
       productsService as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
 
     const dto = {
@@ -651,6 +663,7 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -723,6 +736,7 @@ describe('AdminService.countCancellableTestOrders', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
 
     const result = await service.countCancellableTestOrders();
@@ -751,6 +765,7 @@ describe('AdminService.cancelAllTestOrders', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma, ordersService };
   };
@@ -820,6 +835,7 @@ describe('AdminService.getAllProducts — other-sellers aggregation', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -928,6 +944,7 @@ describe('AdminService.updateSellerSelfShip', () => {
       {} as never,
       {} as never,
       {} as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
@@ -968,6 +985,7 @@ describe('AdminService.getPublicSettings — SEO verification tokens', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service };
   };
@@ -999,7 +1017,7 @@ describe('AdminService.getPublicSettings — storefront SEO defaults', () => {
     const prisma = { systemSetting: { findMany: jest.fn().mockResolvedValue(rows) } };
     return new AdminService(
       prisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
     );
   };
 
@@ -1042,7 +1060,7 @@ describe('AdminService.getPublicSettings — social profiles', () => {
     const prisma = { systemSetting: { findMany: jest.fn().mockResolvedValue(rows) } };
     return new AdminService(
       prisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
     );
   };
 
@@ -1066,7 +1084,7 @@ describe('AdminService.getPublicSettings — support contact', () => {
     const mockConfigService = { get: jest.fn() };
     return new AdminService(
       mockPrisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
     );
   };
 
@@ -1128,6 +1146,7 @@ describe('AdminService — per-order test/real overrides', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
     );
     return { service, prisma };
   };
