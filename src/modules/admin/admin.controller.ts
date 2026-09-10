@@ -33,6 +33,7 @@ import { AdminQueryPaymentsDto } from './dto/query-payments.dto';
 import { AdminQuerySettlementsDto } from './dto/query-settlements.dto';
 import { AdminQueryTicketsDto } from './dto/query-tickets.dto';
 import { AdminUpdateOrderStatusDto } from './dto/admin-update-order-status.dto';
+import { ClassifyOrderDto } from './dto/classify-order.dto';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
 import { MarkPaidDto } from '../settlements/dto/mark-paid.dto';
@@ -342,6 +343,25 @@ export class AdminController {
   async getTestOrdersCount() {
     const data = await this.adminService.countCancellableTestOrders();
     return { message: 'Test order count retrieved', data };
+  }
+
+  @Patch('orders/:id/classification')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Pin an order to the real or the test side, or hand it back to the phone rule',
+  })
+  @ApiResponse({ status: 200, description: 'Order classification updated' })
+  @ApiResponse({ status: 404, description: 'Order not found' })
+  async classifyOrder(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ClassifyOrderDto,
+  ) {
+    const data = await this.adminService.setOrderClassification(
+      id,
+      dto.classification,
+    );
+    return { message: 'Order classification updated', data };
   }
 
   @Post('orders/cancel-test-orders')

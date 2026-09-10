@@ -629,6 +629,13 @@ describe('AdminService.adminCreateProductForSeller', () => {
   });
 });
 
+// The default view hides an order when the phone rule OR an explicit test
+// override says test — unless it is explicitly marked real, which beats both.
+// With no overrides stored only the phone arm is built.
+const excludedTestBuyers = {
+  OR: [{ AND: [{ buyer: { phone: { notIn: ['8500237151'] } } }] }],
+};
+
 describe('AdminService.getAllOrders — test-order exclusion', () => {
   const buildForOrders = () => {
     const prisma = {
@@ -636,6 +643,7 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
       },
+      systemSetting: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new AdminService(
       prisma as never,
@@ -654,7 +662,7 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
     await service.getAllOrders({ page: 1, limit: 20 } as never);
 
     const where = prisma.order.findMany.mock.calls[0][0].where;
-    expect(where.buyer).toEqual({ phone: { notIn: ['8500237151'] } });
+    expect(where.AND).toEqual([excludedTestBuyers]);
     expect(prisma.order.count).toHaveBeenCalledWith({ where });
   });
 
@@ -663,7 +671,7 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
     await service.getAllOrders({ page: 1, limit: 20, includeTestOrders: 'false' } as never);
 
     const where = prisma.order.findMany.mock.calls[0][0].where;
-    expect(where.buyer).toEqual({ phone: { notIn: ['8500237151'] } });
+    expect(where.AND).toEqual([excludedTestBuyers]);
   });
 
   it('does not apply the exclusion when includeTestOrders is "true"', async () => {
@@ -671,7 +679,7 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
     await service.getAllOrders({ page: 1, limit: 20, includeTestOrders: 'true' } as never);
 
     const where = prisma.order.findMany.mock.calls[0][0].where;
-    expect(where.buyer).toBeUndefined();
+    expect(where.AND).toBeUndefined();
   });
 
   it('combines the test-order exclusion with other filters (status) in the same where object', async () => {
@@ -684,12 +692,14 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
 
     const where = prisma.order.findMany.mock.calls[0][0].where;
     expect(where.orderStatus).toBe(OrderStatus.PLACED);
-    expect(where.buyer).toEqual({ phone: { notIn: ['8500237151'] } });
+    expect(where.AND).toEqual([excludedTestBuyers]);
   });
 });
 
 const cancellableTestOrdersWhere = {
-  buyer: { phone: { in: ['8500237151'] } },
+  // The phone rule is one arm of an OR now: an explicit per-order test
+  // override is the other. With no overrides stored, only this arm is built.
+  OR: [{ buyer: { phone: { in: ['8500237151'] } } }],
   orderStatus: {
     notIn: [
       OrderStatus.SHIPPED,
@@ -703,7 +713,10 @@ const cancellableTestOrdersWhere = {
 
 describe('AdminService.countCancellableTestOrders', () => {
   it('counts with the same filter cancelAllTestOrders uses to select orders', async () => {
-    const prisma = { order: { count: jest.fn().mockResolvedValue(7) } };
+    const prisma = {
+      order: { count: jest.fn().mockResolvedValue(7) },
+      systemSetting: { findMany: jest.fn().mockResolvedValue([]) },
+    };
     const service = new AdminService(
       prisma as never,
       {} as never,
@@ -727,6 +740,7 @@ describe('AdminService.cancelAllTestOrders', () => {
       order: {
         findMany: jest.fn().mockResolvedValue(testOrders),
       },
+      systemSetting: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const ordersService = {
       cancelOrder: jest.fn().mockResolvedValue(undefined),
@@ -1076,5 +1090,142 @@ describe('AdminService.getPublicSettings — support contact', () => {
 
     expect(s.supportEmail).toBe('');
     expect(s.supportPhone).toBe('');
+  });
+});
+
+/**
+ * TEST_BUYER_PHONES classifies by WHO placed an order, which cannot express
+ * "these two are real, everything else from that number was me testing".
+ * These cover the per-order overrides that sit on top of it — and, most
+ * importantly, that an order marked REAL can never be swept up by the bulk
+ * test-order cancel, which would be unrecoverable.
+ */
+describe('AdminService — per-order test/real overrides', () => {
+  const TEST_PHONE = '8500237151';
+  const REAL_ID = '15d8cb94-1111-2222-3333-444444444444';
+  const TEST_ID = '2abdcd93-5555-6666-7777-888888888888';
+
+  const buildForOverrides = (
+    settings: { realOrderIds?: string; testOrderIds?: string } = {},
+  ) => {
+    const prisma = {
+      order: {
+        findUnique: jest.fn().mockResolvedValue({ id: REAL_ID }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+      },
+      systemSetting: {
+        findMany: jest.fn().mockResolvedValue(
+          Object.entries(settings).map(([key, value]) => ({ key, value })),
+        ),
+        upsert: jest.fn().mockImplementation((args: unknown) => args),
+      },
+      $transaction: jest.fn().mockResolvedValue([]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      mockConfigService as never,
+    );
+    return { service, prisma };
+  };
+
+  const classifyOf = (service: AdminService) =>
+    (
+      service as unknown as {
+        classify(
+          o: { id: string; buyer?: { phone?: string | null } | null },
+          phones: string[],
+          ov: { real: string[]; test: string[] },
+        ): { isTest: boolean; classification: string };
+      }
+    ).classify.bind(service);
+
+  it('marks an order real even though the test phone placed it', () => {
+    const { service } = buildForOverrides();
+    const result = classifyOf(service)(
+      { id: REAL_ID, buyer: { phone: TEST_PHONE } },
+      [TEST_PHONE],
+      { real: [REAL_ID], test: [] },
+    );
+    expect(result).toEqual({ isTest: false, classification: 'real' });
+  });
+
+  it('marks an order test even though an ordinary customer placed it', () => {
+    const { service } = buildForOverrides();
+    const result = classifyOf(service)(
+      { id: TEST_ID, buyer: { phone: '9967254696' } },
+      [TEST_PHONE],
+      { real: [], test: [TEST_ID] },
+    );
+    expect(result).toEqual({ isTest: true, classification: 'test' });
+  });
+
+  it('falls back to the phone rule when there is no override', () => {
+    const { service } = buildForOverrides();
+    const classify = classifyOf(service);
+    expect(classify({ id: 'x', buyer: { phone: TEST_PHONE } }, [TEST_PHONE], { real: [], test: [] }))
+      .toEqual({ isTest: true, classification: 'auto' });
+    expect(classify({ id: 'y', buyer: { phone: '9967254696' } }, [TEST_PHONE], { real: [], test: [] }))
+      .toEqual({ isTest: false, classification: 'auto' });
+  });
+
+  it('never lets the bulk test cancel touch an order marked real', async () => {
+    const { service, prisma } = buildForOverrides({ realOrderIds: REAL_ID });
+
+    await service.countCancellableTestOrders();
+
+    const where = prisma.order.count.mock.calls[0][0].where as {
+      id?: { notIn?: string[] };
+    };
+    expect(where.id?.notIn).toContain(REAL_ID);
+  });
+
+  it('sweeps an order marked test even though its buyer is not a test phone', async () => {
+    const { service, prisma } = buildForOverrides({ testOrderIds: TEST_ID });
+
+    await service.countCancellableTestOrders();
+
+    const where = prisma.order.count.mock.calls[0][0].where as {
+      OR?: Array<Record<string, unknown>>;
+    };
+    expect(JSON.stringify(where.OR)).toContain(TEST_ID);
+  });
+
+  it('moves an id between the lists rather than leaving it in both', async () => {
+    const { service, prisma } = buildForOverrides({ testOrderIds: REAL_ID });
+
+    await service.setOrderClassification(REAL_ID, 'real');
+
+    const written = prisma.systemSetting.upsert.mock.calls.map(
+      (c: Array<{ where: { key: string }; create: { value: string } }>) => c[0],
+    );
+    const real = written.find((w) => w.where.key === 'realOrderIds');
+    const test = written.find((w) => w.where.key === 'testOrderIds');
+    expect(real?.create.value).toBe(REAL_ID);
+    expect(test?.create.value).toBe('');
+  });
+
+  it("'auto' drops the order from both lists", async () => {
+    const { service, prisma } = buildForOverrides({ realOrderIds: REAL_ID });
+
+    await service.setOrderClassification(REAL_ID, 'auto');
+
+    const written = prisma.systemSetting.upsert.mock.calls.map(
+      (c: Array<{ where: { key: string }; create: { value: string } }>) => c[0],
+    );
+    expect(written.find((w) => w.where.key === 'realOrderIds')?.create.value).toBe('');
+    expect(written.find((w) => w.where.key === 'testOrderIds')?.create.value).toBe('');
+  });
+
+  it('falls back to the phone rule alone when the settings table cannot be read', async () => {
+    const { service, prisma } = buildForOverrides();
+    prisma.systemSetting.findMany.mockRejectedValue(new Error('db down'));
+
+    await expect(service.countCancellableTestOrders()).resolves.toBe(0);
   });
 });
