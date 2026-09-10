@@ -418,6 +418,12 @@ model Order {
   adminInvoiceUrl       String?
   packedPictureUrl      String?
 
+  // Why this order was cancelled, and when. Null on every order that was not.
+  // Shown to the buyer in the message telling them, and kept so support can
+  // answer "why was my order cancelled" without guessing.
+  cancellationReason String?
+  cancelledAt        DateTime?
+
   // Shipping Lock
   isShippingLocked Boolean @default(false)
 

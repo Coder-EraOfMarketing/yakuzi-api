@@ -1033,9 +1033,16 @@ describe('OrdersService.cancelOrder', () => {
 
     await service.cancelOrder('buyer-1', 'order-1', Role.BUYER);
 
+    // The cancellation reason and timestamp are written in this same guarded
+    // statement, so an order can never be cancelled without a record of why.
     expect(prisma.order.updateMany).toHaveBeenCalledWith({
       where: paidGuardWhere,
-      data: { orderStatus: OrderStatus.CANCELLED },
+      data: {
+        orderStatus: OrderStatus.CANCELLED,
+        cancellationReason: null,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        cancelledAt: expect.any(Date),
+      },
     });
   });
 
@@ -1573,5 +1580,118 @@ describe('OrdersService.checkout — contact details already registered', () => 
     const { guard } = buildGuard({ phone: '9008336683', email: 'buyer@example.com' });
 
     await expect(guard('user-1', dto())).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * An admin can cancel an order, but nothing recorded why and nothing told the
+ * buyer — their order simply changed state under them. These pin the reason
+ * into the same guarded write as the status, so an order can never end up
+ * cancelled with no record of why, and pin that telling the buyer can never
+ * fail a cancellation that has already restored stock.
+ */
+describe('OrdersService.cancelOrder — reason and buyer notice', () => {
+  const ORDER_ID = 'abaf6047-9999-8888-7777-666666666666';
+
+  const buildCancel = () => {
+    const tx = {
+      order: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ id: ORDER_ID, orderStatus: 'CANCELLED' }),
+      },
+      productBatch: { update: jest.fn() },
+      productWaitlist: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn() },
+    };
+    const prisma = {
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: ORDER_ID,
+          buyerId: 'buyer-1',
+          orderStatus: 'PLACED',
+          paymentStatus: 'PENDING',
+          buyer: { email: 'buyer@example.com', phone: '9000000000' },
+          items: [],
+        }),
+      },
+      $transaction: jest.fn().mockImplementation((cb: any) => cb(tx)),
+    };
+    const notificationsService = {
+      notifyOrderCancelled: jest.fn().mockResolvedValue(undefined),
+    };
+    const mailService = { sendMail: jest.fn().mockResolvedValue({ sent: true }) };
+    const otpSmsService = { sendTransactional: jest.fn().mockResolvedValue({ success: true }) };
+    const service = new OrdersService(
+      prisma as never,
+      {} as never,
+      mailService as never,
+      notificationsService as never,
+      otpSmsService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    return { service, prisma, tx, notificationsService, mailService, otpSmsService };
+  };
+
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it('writes the reason in the same statement as the cancelled status', async () => {
+    const { service, tx } = buildCancel();
+
+    await service.cancelOrder('admin-1', ORDER_ID, 'ADMIN', 'Item out of stock at the seller');
+
+    const write = tx.order.updateMany.mock.calls[0][0].data;
+    expect(write.orderStatus).toBe('CANCELLED');
+    expect(write.cancellationReason).toBe('Item out of stock at the seller');
+    expect(write.cancelledAt).toBeInstanceOf(Date);
+  });
+
+  it('stores null rather than an empty string when no reason is given', async () => {
+    const { service, tx } = buildCancel();
+
+    await service.cancelOrder('buyer-1', ORDER_ID, 'BUYER');
+
+    expect(tx.order.updateMany.mock.calls[0][0].data.cancellationReason).toBeNull();
+  });
+
+  it('tells the buyer, with the reason, on all three channels', async () => {
+    const { service, notificationsService, mailService, otpSmsService } = buildCancel();
+
+    await service.cancelOrder('admin-1', ORDER_ID, 'ADMIN', 'Seller could not fulfil');
+    await flush();
+
+    expect(notificationsService.notifyOrderCancelled).toHaveBeenCalledWith(
+      'buyer-1',
+      ORDER_ID,
+      'Seller could not fulfil',
+    );
+    const email = mailService.sendMail.mock.calls[0][0];
+    expect(email.to).toBe('buyer@example.com');
+    expect(email.subject).toContain('cancelled');
+    expect(email.text).toContain('Seller could not fulfil');
+    expect(otpSmsService.sendTransactional).toHaveBeenCalled();
+  });
+
+  it('keeps an admin-typed reason out of the DLT-approved SMS', async () => {
+    const { service, otpSmsService } = buildCancel();
+
+    await service.cancelOrder('admin-1', ORDER_ID, 'ADMIN', 'Seller could not fulfil');
+    await flush();
+
+    const [, message] = otpSmsService.sendTransactional.mock.calls[0];
+    expect(message).not.toContain('Seller could not fulfil');
+    expect(message).not.toContain('http');
+  });
+
+  it('still cancels when telling the buyer fails', async () => {
+    const { service, mailService } = buildCancel();
+    mailService.sendMail.mockRejectedValue(new Error('smtp down'));
+
+    await expect(
+      service.cancelOrder('admin-1', ORDER_ID, 'ADMIN', 'whatever'),
+    ).resolves.toBeDefined();
+    await flush();
   });
 });

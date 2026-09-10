@@ -2037,7 +2037,77 @@ export class OrdersService {
   // CANCEL ORDER — Buyer or Admin or Seller
   // ──────────────────────────────────────────────
 
-  async cancelOrder(userId: string, orderId: string, role: string) {
+  /**
+   * In-app, email and SMS, the same three channels every other status change
+   * uses — but built here rather than through BUYER_STATUS_UPDATES because
+   * this one carries a reason, and the others do not.
+   */
+  private async notifyBuyerOfCancellation(
+    orderId: string,
+    reason?: string,
+  ): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, buyerId: true, buyer: { select: { email: true, phone: true } } },
+    });
+    if (!order) return;
+
+    const shortId = order.id.slice(0, 8).toUpperCase();
+    const why = reason?.trim() ? `\n\nReason: ${reason.trim()}` : '';
+
+    try {
+      await this.notificationsService.notifyOrderCancelled(
+        order.buyerId,
+        order.id,
+        reason,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `In-app cancellation notice failed for order ${orderId}: ${error?.message}`,
+      );
+    }
+
+    if (order.buyer?.email) {
+      await this.mailService.sendMail({
+        to: order.buyer.email,
+        subject: `Your Yukizi order #${shortId} has been cancelled`,
+        text: [
+          'Hi,',
+          '',
+          `Your order #${shortId} has been cancelled.${why}`,
+          '',
+          'Anything already paid for this order will be refunded to the original payment method.',
+          '',
+          'Need help? Email support@yukizi.com',
+          '',
+          '— Team Yukizi',
+        ].join('\n'),
+        html:
+          `<p>Hi,</p><p>Your order <strong>#${shortId}</strong> has been cancelled.</p>` +
+          (reason?.trim()
+            ? `<p style="color:#475569">Reason: ${this.escape(reason.trim())}</p>`
+            : '') +
+          '<p style="color:#475569;font-size:12px">Anything already paid for this order will be refunded to the original payment method.</p>' +
+          '<p style="color:#475569;font-size:12px">Need help? Email <a href="mailto:support@yukizi.com">support@yukizi.com</a></p>',
+      });
+    }
+
+    if (order.buyer?.phone) {
+      // Same DLT-approved shape as the other status messages: no URL, no
+      // free text from an admin, so the template cannot be rejected.
+      await this.otpSmsService.sendTransactional(
+        order.buyer.phone,
+        `Your Yukizi order #${shortId} has been cancelled. Check the Yukizi app for details.`,
+      );
+    }
+  }
+
+  async cancelOrder(
+    userId: string,
+    orderId: string,
+    role: string,
+    reason?: string,
+  ) {
     // 1. Fetch order
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -2112,7 +2182,13 @@ export class OrdersService {
       // before anything else in this transaction has run.
       const guardedUpdate = await tx.order.updateMany({
         where: { id: orderId, paymentStatus: { notIn: paidStatuses } },
-        data: { orderStatus: OrderStatus.CANCELLED },
+        data: {
+          orderStatus: OrderStatus.CANCELLED,
+          // Written in the same guarded statement as the status, so an order
+          // can never end up cancelled with no record of why.
+          cancellationReason: reason?.trim() || null,
+          cancelledAt: new Date(),
+        },
       });
       if (guardedUpdate.count === 0) {
         throw new BadRequestException(
@@ -2163,6 +2239,17 @@ export class OrdersService {
     });
 
     this.logger.log(`Order ${orderId} was cancelled by ${role} ${userId}`);
+
+    // The buyer is told their order is gone, and why. Detached and swallowed:
+    // the cancellation is already committed and stock already restored, so a
+    // notification channel having a bad day must not turn a completed cancel
+    // into an error for whoever pressed the button.
+    void this.notifyBuyerOfCancellation(orderId, reason).catch((error) => {
+      this.logger.warn(
+        `Could not tell the buyer order ${orderId} was cancelled: ${(error as Error)?.message}`,
+      );
+    });
+
     return updated;
   }
 }
