@@ -186,7 +186,21 @@ export class AdminService {
         ...(real.length ? [{ id: { in: real } }] : []),
         {
           AND: [
-            { buyer: { phone: { notIn: testPhones } } },
+            {
+              // A buyer with NO phone is not a test buyer — but in SQL
+              // `phone NOT IN (...)` evaluates to NULL for them, never TRUE,
+              // so their orders were silently dropped from the orders list,
+              // from Total Orders and from Platform Revenue. Real, paid
+              // orders simply were not there, and nothing said so.
+              //
+              // User.phone is nullable and stays null when a buyer signs in
+              // with Google and checkout cannot claim their number because
+              // another account already holds it.
+              OR: [
+                { buyer: { is: { phone: null } } },
+                { buyer: { phone: { notIn: testPhones } } },
+              ],
+            },
             ...(test.length ? [{ id: { notIn: test } }] : []),
           ],
         },
