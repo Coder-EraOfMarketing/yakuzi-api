@@ -666,7 +666,22 @@ describe('AdminService.adminCreateProductForSeller', () => {
 // override says test — unless it is explicitly marked real, which beats both.
 // With no overrides stored only the phone arm is built.
 const excludedTestBuyers = {
-  OR: [{ AND: [{ buyer: { phone: { notIn: ['8500237151'] } } }] }],
+  OR: [
+    {
+      AND: [
+        {
+          // A buyer with no phone at all is not a test buyer. Without the
+          // null arm, SQL's `phone NOT IN (...)` is NULL for them — never
+          // TRUE — and their orders disappear from the list and the revenue
+          // figures alike.
+          OR: [
+            { buyer: { is: { phone: null } } },
+            { buyer: { phone: { notIn: ['8500237151'] } } },
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 describe('AdminService.getAllOrders — test-order exclusion', () => {
@@ -1418,5 +1433,117 @@ describe('AdminService.getCommissionInvoicePdf', () => {
     await expect(service.getCommissionInvoicePdf(SETTLEMENT_ID)).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+});
+
+/**
+ * A buyer with no phone number is not a test buyer.
+ *
+ * `phone NOT IN (...)` is NULL for them in SQL — never TRUE — so before this
+ * their orders were dropped from Order Monitoring, from Total Orders and from
+ * Platform Revenue, with nothing on screen to say anything had been filtered.
+ * User.phone stays null whenever someone signs in with Google and checkout
+ * cannot claim their number because another account already holds it.
+ */
+describe('AdminService — orders from buyers with no phone', () => {
+  const buildForPhoneless = () => {
+    const prisma = {
+      order: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { totalAmount: null }, _count: { id: 0 } }),
+      },
+      user: { count: jest.fn().mockResolvedValue(0) },
+      payment: { count: jest.fn().mockResolvedValue(0) },
+      sellerSettlement: { count: jest.fn().mockResolvedValue(0) },
+      sellerOffer: { count: jest.fn().mockResolvedValue(0) },
+      ticket: { count: jest.fn().mockResolvedValue(0) },
+      systemSetting: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
+    );
+    return { service, prisma };
+  };
+
+  /** Does this filter admit an order whose buyer has no phone? */
+  const admitsNullPhone = (where: unknown): boolean =>
+    JSON.stringify(where).includes('{"buyer":{"is":{"phone":null}}}');
+
+  it('keeps them in the orders list', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getAllOrders({ page: 1, limit: 20 } as never);
+
+    expect(admitsNullPhone(prisma.order.findMany.mock.calls[0][0].where)).toBe(true);
+  });
+
+  it('counts them in the same query the list uses, so the two agree', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getAllOrders({ page: 1, limit: 20 } as never);
+
+    expect(prisma.order.count).toHaveBeenCalledWith({
+      where: prisma.order.findMany.mock.calls[0][0].where,
+    });
+  });
+
+  it('counts them toward Total Orders', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getDashboard({});
+
+    expect(admitsNullPhone(prisma.order.count.mock.calls[0][0].where)).toBe(true);
+  });
+
+  it('counts them toward Platform Revenue', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getDashboard({});
+
+    expect(admitsNullPhone(prisma.order.aggregate.mock.calls[0][0].where)).toBe(true);
+  });
+
+  it('shows them in Recent Platform Orders', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getDashboard({});
+
+    expect(admitsNullPhone(prisma.order.findMany.mock.calls[0][0].where)).toBe(true);
+  });
+
+  it('still excludes the real test-buyer number', async () => {
+    const { service, prisma } = buildForPhoneless();
+
+    await service.getAllOrders({ page: 1, limit: 20 } as never);
+
+    expect(JSON.stringify(prisma.order.findMany.mock.calls[0][0].where)).toContain(
+      '8500237151',
+    );
+  });
+
+  it('does not treat a phone-less buyer as a test buyer when classifying a row', () => {
+    const { service } = buildForPhoneless();
+    const classify = (
+      service as unknown as {
+        classify(
+          o: { id: string; buyer?: { phone?: string | null } | null },
+          phones: string[],
+          ov: { real: string[]; test: string[] },
+        ): { isTest: boolean };
+      }
+    ).classify.bind(service);
+
+    expect(classify({ id: 'x', buyer: { phone: null } }, ['8500237151'], { real: [], test: [] }))
+      .toEqual({ isTest: false, classification: 'auto' });
   });
 });
