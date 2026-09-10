@@ -20,6 +20,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { FeedsModule } from './modules/feeds/feeds.module';
 import { CartModule } from './modules/cart/cart.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { WishlistModule } from './modules/wishlist/wishlist.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
@@ -149,6 +150,7 @@ import { WebAnalyticsModule } from './modules/web-analytics/web-analytics.module
     FeedsModule,
     CartModule,
     OrdersModule,
+    WishlistModule,
     PaymentsModule,
     NotificationsModule,
     MailModule,
