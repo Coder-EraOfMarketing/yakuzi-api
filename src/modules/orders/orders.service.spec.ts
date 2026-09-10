@@ -335,7 +335,14 @@ describe('OrdersService.syncTrackingFields', () => {
 });
 
 describe('OrdersService.notifyBuyerOfStatusChange', () => {
-  const buildNotifyDeps = () => {
+  const buildNotifyDeps = (
+    shipment: { trackingUrl: string | null; courierName: string | null } | null = null,
+  ) => {
+    // The status email looks up the courier link for itself; unset by default
+    // so the tests that predate it still describe a shipment with no link.
+    const prisma = {
+      order: { findUnique: jest.fn().mockResolvedValue(shipment) },
+    };
     const mailService = { sendMail: jest.fn().mockResolvedValue({ sent: true, retryable: false }), resolveAdminRecipient: jest.fn(async () => process.env.ADMIN_NOTIFICATION_EMAIL?.trim() || process.env.SMTP_USER?.trim() || undefined) };
     const notificationsService = {
       notifyOrderDispatched: jest.fn().mockResolvedValue(undefined),
@@ -347,7 +354,7 @@ describe('OrdersService.notifyBuyerOfStatusChange', () => {
       sendTransactional: jest.fn().mockResolvedValue({ success: true }),
     };
     const service = new OrdersService(
-      {} as never,
+      prisma as never,
       {} as never,
       mailService as never,
       notificationsService as never,
@@ -356,7 +363,7 @@ describe('OrdersService.notifyBuyerOfStatusChange', () => {
       {} as never,
       {} as never,
     );
-    return { service, mailService, notificationsService, otpSmsService };
+    return { service, prisma, mailService, notificationsService, otpSmsService };
   };
 
   const order = {
@@ -422,6 +429,87 @@ describe('OrdersService.notifyBuyerOfStatusChange', () => {
     await expect(
       service.notifyBuyerOfStatusChange(order, OrderStatus.DELIVERED),
     ).resolves.toBeUndefined();
+  });
+
+  /**
+   * The buyer used to be told their order had shipped and then sent looking
+   * for the link themselves, while the ADMIN email carried it. These pin the
+   * link into the buyer's own mail — and pin it OUT of the SMS, which goes
+   * against a DLT-approved template that must not gain a URL.
+   */
+  describe('with a courier link on the order', () => {
+    const shipment = {
+      trackingUrl: 'https://track.delhivery.com/p/ABC123',
+      courierName: 'Delhivery',
+    };
+
+    it('puts the link and the courier in the shipped email', async () => {
+      const { service, mailService } = buildNotifyDeps(shipment);
+
+      await service.notifyBuyerOfStatusChange(order, OrderStatus.SHIPPED);
+
+      const sent = mailService.sendMail.mock.calls[0][0];
+      expect(sent.text).toContain('https://track.delhivery.com/p/ABC123');
+      expect(sent.text).toContain('Delhivery');
+      expect(sent.html).toContain('href="https://track.delhivery.com/p/ABC123"');
+    });
+
+    it('leaves the SMS wording exactly as the DLT template has it', async () => {
+      const { service, otpSmsService } = buildNotifyDeps(shipment);
+
+      await service.notifyBuyerOfStatusChange(order, OrderStatus.SHIPPED);
+
+      const [, message] = otpSmsService.sendTransactional.mock.calls[0];
+      expect(message).toBe(
+        'Your Yukizi order #ORDER-AB is now Shipped. Track it in the Yukizi app.',
+      );
+      expect(message).not.toContain('http');
+    });
+
+    it('keeps the old wording when there is no link yet', async () => {
+      const { service, mailService } = buildNotifyDeps(null);
+
+      await service.notifyBuyerOfStatusChange(order, OrderStatus.SHIPPED);
+
+      const sent = mailService.sendMail.mock.calls[0][0];
+      expect(sent.text).toContain('You can track it anytime from the Orders section');
+      expect(sent.text).not.toContain('Track your parcel');
+    });
+
+    it('does not chase a link for an order that has already been delivered', async () => {
+      const { service, prisma, mailService } = buildNotifyDeps(shipment);
+
+      await service.notifyBuyerOfStatusChange(order, OrderStatus.DELIVERED);
+
+      expect(prisma.order.findUnique).not.toHaveBeenCalled();
+      expect(mailService.sendMail.mock.calls[0][0].text).not.toContain(
+        'Track your parcel',
+      );
+    });
+
+    it('still emails the buyer when the tracking lookup fails', async () => {
+      const { service, prisma, mailService } = buildNotifyDeps(shipment);
+      prisma.order.findUnique.mockRejectedValue(new Error('connection lost'));
+
+      await expect(
+        service.notifyBuyerOfStatusChange(order, OrderStatus.SHIPPED),
+      ).resolves.toBeUndefined();
+
+      expect(mailService.sendMail).toHaveBeenCalled();
+    });
+
+    it('escapes a courier name a seller typed', async () => {
+      const { service, mailService } = buildNotifyDeps({
+        trackingUrl: null,
+        courierName: '<script>alert(1)</script>',
+      });
+
+      await service.notifyBuyerOfStatusChange(order, OrderStatus.SHIPPED);
+
+      const sent = mailService.sendMail.mock.calls[0][0];
+      expect(sent.html).not.toContain('<script>');
+      expect(sent.html).toContain('&lt;script&gt;');
+    });
   });
 });
 
