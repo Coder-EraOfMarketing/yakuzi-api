@@ -414,6 +414,9 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
       sellerSettlement: { count: jest.fn().mockResolvedValue(0) },
       sellerOffer: { count: jest.fn().mockResolvedValue(0) },
       ticket: { count: jest.fn().mockResolvedValue(0) },
+      // Every order figure now goes through the shared not-a-test filter,
+      // which reads the per-order overrides. None stored here.
+      systemSetting: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new AdminService(
       prisma as never,
@@ -441,9 +444,7 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
     const { service, prisma } = buildForDashboard();
     await service.getDashboard({});
     const totalOrdersCall = prisma.order.count.mock.calls[0][0];
-    expect(totalOrdersCall).toEqual({
-      where: { buyer: { phone: { notIn: ['8500237151'] } } },
-    });
+    expect(totalOrdersCall).toEqual({ where: { AND: [excludedTestBuyers] } });
   });
 
   it('leaves the DELIVERED-only referral revenue aggregate untouched', async () => {
@@ -463,7 +464,8 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
     const { service, prisma } = buildForDashboard();
     await service.getDashboard({});
     expect(prisma.order.count).toHaveBeenCalledWith({
-      where: expect.objectContaining({ buyer: { phone: { notIn: ['8500237151'] } } }),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      where: expect.objectContaining({ AND: [excludedTestBuyers] }),
     });
   });
 
@@ -471,18 +473,14 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
     const { service, prisma } = buildForDashboard();
     await service.getDashboard({});
     const revenueCall = prisma.order.aggregate.mock.calls[0][0];
-    expect(revenueCall.where).toMatchObject({
-      buyer: { phone: { notIn: ['8500237151'] } },
-    });
+    expect(revenueCall.where).toMatchObject({ AND: [excludedTestBuyers] });
   });
 
   it('excludes the known test-buyer account from Recent Orders', async () => {
     const { service, prisma } = buildForDashboard();
     await service.getDashboard({});
     const recentOrdersCall = prisma.order.findMany.mock.calls[0][0];
-    expect(recentOrdersCall.where).toMatchObject({
-      buyer: { phone: { notIn: ['8500237151'] } },
-    });
+    expect(recentOrdersCall.where).toMatchObject({ AND: [excludedTestBuyers] });
   });
 });
 
@@ -1227,5 +1225,67 @@ describe('AdminService — per-order test/real overrides', () => {
     prisma.systemSetting.findMany.mockRejectedValue(new Error('db down'));
 
     await expect(service.countCancellableTestOrders()).resolves.toBe(0);
+  });
+});
+
+/**
+ * The dashboard used to write the phone rule out at each call site, so
+ * marking an order real brought it into the orders list while Total Orders
+ * and Platform Revenue carried on ignoring it — two screens, two answers,
+ * same order. Every order figure now goes through one shared filter.
+ */
+describe('AdminService.getDashboard — honours per-order overrides', () => {
+  const REAL_ID = '15d8cb94-1111-2222-3333-444444444444';
+
+  const buildForDashboardOverrides = () => {
+    const prisma = {
+      user: { count: jest.fn().mockResolvedValue(0) },
+      order: {
+        count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { totalAmount: null }, _count: { id: 0 } }),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      payment: { count: jest.fn().mockResolvedValue(0) },
+      sellerSettlement: { count: jest.fn().mockResolvedValue(0) },
+      sellerOffer: { count: jest.fn().mockResolvedValue(0) },
+      ticket: { count: jest.fn().mockResolvedValue(0) },
+      systemSetting: {
+        findMany: jest.fn().mockResolvedValue([{ key: 'realOrderIds', value: REAL_ID }]),
+      },
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      mockConfigService as never,
+    );
+    return { service, prisma };
+  };
+
+  it('counts an order marked real toward Total Orders, whoever placed it', async () => {
+    const { service, prisma } = buildForDashboardOverrides();
+    await service.getDashboard({});
+    expect(JSON.stringify(prisma.order.count.mock.calls[0][0])).toContain(REAL_ID);
+  });
+
+  it('counts an order marked real toward Platform Revenue', async () => {
+    const { service, prisma } = buildForDashboardOverrides();
+    await service.getDashboard({});
+    expect(JSON.stringify(prisma.order.aggregate.mock.calls[0][0].where)).toContain(REAL_ID);
+  });
+
+  it('shows an order marked real in Recent Platform Orders', async () => {
+    const { service, prisma } = buildForDashboardOverrides();
+    await service.getDashboard({});
+    expect(JSON.stringify(prisma.order.findMany.mock.calls[0][0].where)).toContain(REAL_ID);
+  });
+
+  it('asks for the overrides once, not once per figure', async () => {
+    const { service, prisma } = buildForDashboardOverrides();
+    await service.getDashboard({});
+    expect(prisma.systemSetting.findMany).toHaveBeenCalledTimes(1);
   });
 });
