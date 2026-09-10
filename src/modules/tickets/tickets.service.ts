@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
-import { Role } from '@prisma/client';
+import { Role, TicketStatus } from '@prisma/client';
 
 @Injectable()
 export class TicketsService {
@@ -202,4 +202,45 @@ export class TicketsService {
       description: ticket.messages[0]?.message || '',
     };
   }
+
+  /**
+   * Closes a ticket. Either side may: the person who raised it, once their
+   * problem is solved, or an admin from the support screen.
+   *
+   * The "Close ticket" button in the buyer's support drawer has always been
+   * there — this is the endpoint it has been calling into thin air.
+   */
+  async closeTicket(userId: string, role: Role, ticketId: string) {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, userId: true, status: true },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException('Ticket not found');
+    }
+
+    // Same rule getTicketById applies: your own ticket, or you are an admin.
+    if (ticket.userId !== userId && role !== Role.ADMIN) {
+      throw new ForbiddenException('You do not have access to this ticket');
+    }
+
+    // Closing a closed ticket is not an error. The button can be pressed twice,
+    // and support and the buyer can close the same ticket at the same moment.
+    if (ticket.status === TicketStatus.CLOSED) {
+      return this.getTicketById(userId, role, ticketId);
+    }
+
+    await this.prisma.ticket.update({
+      where: { id: ticketId },
+      data: { status: TicketStatus.CLOSED },
+    });
+
+    this.logger.log(
+      `Ticket ${ticketId} closed by ${role === Role.ADMIN ? 'support' : 'the buyer'}`,
+    );
+
+    return this.getTicketById(userId, role, ticketId);
+  }
+
 }
