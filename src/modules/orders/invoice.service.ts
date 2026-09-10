@@ -52,6 +52,13 @@ export interface Invoice {
   invoiceNumber: string;
   invoiceDate: string;
   orderReference: string;
+  /**
+   * The supplying seller's profile id — how a caller picks ONE invoice off an
+   * order carrying several. The seller's name is not unique, and the invoice
+   * number's suffix depends on how many sellers the order happens to have, so
+   * neither is safe to address a single document by.
+   */
+  sellerId: string;
   seller: InvoiceParty;
   buyer: InvoiceParty;
   placeOfSupply: string;
@@ -279,6 +286,7 @@ export class InvoiceService {
         invoiceNumber: `YKZ/INV/${financialYear}/${orderRef}${suffix}`,
         invoiceDate: order.createdAt.toISOString(),
         orderReference: `YKZ/ORD/${financialYear}/${orderRef}`,
+        sellerId,
         seller: {
           name: seller.companyName,
           gstin: seller.gstNumber ?? null,

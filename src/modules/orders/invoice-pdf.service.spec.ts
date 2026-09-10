@@ -16,6 +16,7 @@ const invoice = (over: Partial<Invoice> = {}): Invoice => ({
   invoiceNumber: 'YKZ/INV/2026-27/00323711',
   invoiceDate: '2026-08-06T10:00:00.000Z',
   orderReference: 'YKZ/ORD/2026-27/00323711',
+  sellerId: 'seller-1',
   seller: {
     name: 'Galazy Enterprises',
     gstin: null,
