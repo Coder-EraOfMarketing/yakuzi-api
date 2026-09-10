@@ -8,31 +8,32 @@ datasource db {
 }
 
 model User {
-  id                     String                  @id @default(uuid())
-  phone                  String?                 @unique
-  email                  String?                 @unique
-  username               String?                 @unique
-  password               String?
-  gender                 String?
-  dob                    DateTime?
-  role                   Role
-  status                 UserStatus              @default(NEW)
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  legacyId               String?                 @unique
-  adminProfile           AdminProfile?
-  buyerProfile           BuyerProfile?
-  cart                   Cart?
-  messages               Message[]
-  notificationBroadcasts NotificationBroadcast[]
-  notifications          Notification[]
-  orders                 Order[]
-  productRequests        ProductRequest[]
-  productWaitlists       ProductWaitlist[]
-  reviews                Review[]
-  sellerProfile          SellerProfile?
-  tickets                Ticket[]
-  adminCreatedSellerOffers SellerOffer[] @relation("SellerOfferCreatedByAdmin")
+  id                       String                  @id @default(uuid())
+  phone                    String?                 @unique
+  email                    String?                 @unique
+  username                 String?                 @unique
+  password                 String?
+  gender                   String?
+  dob                      DateTime?
+  role                     Role
+  status                   UserStatus              @default(NEW)
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  legacyId                 String?                 @unique
+  adminProfile             AdminProfile?
+  buyerProfile             BuyerProfile?
+  cart                     Cart?
+  messages                 Message[]
+  notificationBroadcasts   NotificationBroadcast[]
+  notifications            Notification[]
+  orders                   Order[]
+  productRequests          ProductRequest[]
+  productWaitlists         ProductWaitlist[]
+  wishlistItems            WishlistItem[]
+  reviews                  Review[]
+  sellerProfile            SellerProfile?
+  tickets                  Ticket[]
+  adminCreatedSellerOffers SellerOffer[]           @relation("SellerOfferCreatedByAdmin")
 
   @@index([role])
   @@index([status])
@@ -85,8 +86,8 @@ model BuyerProfile {
 }
 
 model SellerProfile {
-  id                  String             @id @default(uuid())
-  userId              String             @unique
+  id                  String              @id @default(uuid())
+  userId              String              @unique
   companyName         String
   gstNumber           String?
   panNumber           String?
@@ -97,16 +98,16 @@ model SellerProfile {
   city                String
   state               String
   pincode             String
-  isVacation          Boolean            @default(false)
+  isVacation          Boolean             @default(false)
   /// When true, orders created for this seller are fulfilled by the seller's
   /// own courier (self-ship) instead of the platform's Shiprocket flow.
   /// Snapshotted onto Order.fulfillmentMode at checkout - toggling this
   /// never changes existing orders.
-  selfShipEnabled     Boolean            @default(false)
-  rating              Float              @default(0)
-  verificationStatus  VerificationStatus @default(UNVERIFIED)
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  selfShipEnabled     Boolean             @default(false)
+  rating              Float               @default(0)
+  verificationStatus  VerificationStatus  @default(UNVERIFIED)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
   creditTier          CreditTier?
   gstPanResponse      Json?
   email               String?
@@ -202,42 +203,42 @@ model HomepageSection {
 }
 
 model Category {
-  id                   String            @id @default(uuid())
-  name                 String            @unique
-  slug                 String            @unique
+  id                   String                @id @default(uuid())
+  name                 String                @unique
+  slug                 String                @unique
   image                String?
   /// Optional portrait-friendly banner for phones. Null means "use image".
   mobileImage          String?
   /// Visible intro copy on the buyer category page; also feeds its meta
   /// description. Admin-editable from the Collections modal.
   description          String?
-  createdAt            DateTime          @default(now())
+  createdAt            DateTime              @default(now())
   masterProducts       CatalogProduct[]
-  extraOfProducts      CatalogProduct[]  @relation("ProductExtraCategories")
+  extraOfProducts      CatalogProduct[]      @relation("ProductExtraCategories")
   sellerOffers         SellerOffer[]
   subCategories        SubCategory[]
   homepageSections     HomepageSection[]
-  commissionPercent    Decimal?          @db.Decimal(10, 2)
-  fixedFee             Decimal?          @db.Decimal(10, 2)
-  commissionGstPercent Decimal?          @db.Decimal(10, 2)
+  commissionPercent    Decimal?              @db.Decimal(10, 2)
+  fixedFee             Decimal?              @db.Decimal(10, 2)
+  commissionGstPercent Decimal?              @db.Decimal(10, 2)
   bannerImages         CategoryBannerImage[]
 
   @@map("categories")
 }
 
 model SubCategory {
-  id                   String           @id @default(uuid())
+  id                   String                @id @default(uuid())
   name                 String
   slug                 String
   categoryId           String
-  createdAt            DateTime         @default(now())
+  createdAt            DateTime              @default(now())
   masterProducts       CatalogProduct[]
-  extraOfProducts      CatalogProduct[] @relation("ProductExtraSubCategories")
+  extraOfProducts      CatalogProduct[]      @relation("ProductExtraSubCategories")
   sellerOffers         SellerOffer[]
-  commissionPercent    Decimal?         @db.Decimal(10, 2)
-  fixedFee             Decimal?         @db.Decimal(10, 2)
-  commissionGstPercent Decimal?         @db.Decimal(10, 2)
-  category             Category         @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  commissionPercent    Decimal?              @db.Decimal(10, 2)
+  fixedFee             Decimal?              @db.Decimal(10, 2)
+  commissionGstPercent Decimal?              @db.Decimal(10, 2)
+  category             Category              @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   thirdCategories      ThirdCategory[]
   homepageSections     HomepageSection[]
   bannerImages         CategoryBannerImage[]
@@ -280,24 +281,24 @@ model SellerOffer {
   specifications String?
 
   description          String?
-  mrp                  Decimal               @db.Decimal(10, 2)
-  gstPercent           Decimal               @db.Decimal(10, 2)
-  isTaxIncluded        Boolean               @default(false)
-  shippingCharges      Decimal               @default(0) @db.Decimal(10, 2)
-  finalShippingPrice   Decimal?              @db.Decimal(10, 2)
-  finalCustomerPayable Decimal?              @db.Decimal(10, 2)
-  minimumOrderQuantity Int                   @default(1)
+  mrp                  Decimal                     @db.Decimal(10, 2)
+  gstPercent           Decimal                     @db.Decimal(10, 2)
+  isTaxIncluded        Boolean                     @default(false)
+  shippingCharges      Decimal                     @default(0) @db.Decimal(10, 2)
+  finalShippingPrice   Decimal?                    @db.Decimal(10, 2)
+  finalCustomerPayable Decimal?                    @db.Decimal(10, 2)
+  minimumOrderQuantity Int                         @default(1)
   maximumOrderQuantity Int?
-  isActive             Boolean               @default(false)
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  isActive             Boolean                     @default(false)
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
   deletedAt            DateTime?
   slug                 String?
-  externalId           String?               @unique
+  externalId           String?                     @unique
   discountType         DiscountType?
   discountMeta         Json?
   deliveryText         String?
-  approvalStatus       ProductApprovalStatus @default(PENDING)
+  approvalStatus       ProductApprovalStatus       @default(PENDING)
   rejectionReason      String?
   variantId            String?
   productAnalyticsId   String?
@@ -309,16 +310,16 @@ model SellerOffer {
   batches              ProductBatch[]
   reviews              Review[]
   integrationMappings  IntegrationProductMapping[]
-  category             Category              @relation(fields: [categoryId], references: [id])
-  analytics            ProductAnalytics?     @relation(fields: [productAnalyticsId], references: [id])
-  searchIndex          ProductSearchIndex?   @relation(fields: [productSearchIndexId], references: [id])
-  seller               SellerProfile         @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  subCategory          SubCategory           @relation(fields: [subCategoryId], references: [id])
-  variant              ProductVariant?       @relation(fields: [variantId], references: [id])
+  category             Category                    @relation(fields: [categoryId], references: [id])
+  analytics            ProductAnalytics?           @relation(fields: [productAnalyticsId], references: [id])
+  searchIndex          ProductSearchIndex?         @relation(fields: [productSearchIndexId], references: [id])
+  seller               SellerProfile               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  subCategory          SubCategory                 @relation(fields: [subCategoryId], references: [id])
+  variant              ProductVariant?             @relation(fields: [variantId], references: [id])
   catalogProductId     String?
-  catalogProduct       CatalogProduct?       @relation(fields: [catalogProductId], references: [id])
+  catalogProduct       CatalogProduct?             @relation(fields: [catalogProductId], references: [id])
   createdByAdminId     String?
-  createdByAdmin       User?                 @relation("SellerOfferCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+  createdByAdmin       User?                       @relation("SellerOfferCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: SetNull)
 
   @@index([sellerId])
   @@index([categoryId])
@@ -1014,9 +1015,9 @@ model ChatbotRule {
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  @@map("chatbot_rules")
   @@index([isActive])
   @@index([tier, order])
+  @@map("chatbot_rules")
 }
 
 enum MarketingSlot {
@@ -1149,6 +1150,23 @@ enum ProductRequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+model WishlistItem {
+  id        String   @id @default(uuid())
+  userId    String
+  /// What the storefront saves. Today that is a SellerOffer id, but a plain
+  /// string rather than a foreign key on purpose: a listing that is delisted
+  /// or replaced must not cascade someone's saved list away, and the id space
+  /// can change without a migration. Resolution to a product happens on read.
+  productId String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@map("wishlist_items")
 }
 
 model ProductWaitlist {
@@ -1581,7 +1599,7 @@ model SellerIntegration {
 
   /// AES-256-GCM ciphertext of a JSON credential bundle. Never selected into
   /// a seller-facing response — see IntegrationsService.toSellerView().
-  encryptedCredentials String?
+  encryptedCredentials  String?
   /// Key generation used, so credentials can be re-wrapped after a key roll.
   credentialsKeyVersion Int      @default(1)
   scopes                String[] @default([])
@@ -1607,17 +1625,17 @@ model SellerIntegration {
   lastError            String?
   lastErrorAt          DateTime?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
   /// Set on disconnect; the row is kept so history and mappings survive.
   disconnectedAt DateTime?
 
-  seller   SellerProfile               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  mappings IntegrationProductMapping[]
-  events   InventoryEvent[]
-  jobs     IntegrationSyncJob[]
-  logs     IntegrationLog[]
-  webhooks IntegrationWebhook[]
+  seller         SellerProfile               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  mappings       IntegrationProductMapping[]
+  events         InventoryEvent[]
+  jobs           IntegrationSyncJob[]
+  logs           IntegrationLog[]
+  webhooks       IntegrationWebhook[]
   externalOrders IntegrationExternalOrder[]
 
   @@unique([sellerId, provider, externalAccountId])
@@ -1630,12 +1648,12 @@ model SellerIntegration {
 /// Registered webhook/notification subscriptions, so disconnect can delete
 /// exactly what was created rather than guessing.
 model IntegrationWebhook {
-  id            String @id @default(uuid())
-  integrationId String
+  id              String   @id @default(uuid())
+  integrationId   String
   /// Provider's own id for the subscription (Shopify webhook id, Woo webhook
   /// id, Amazon subscription id).
-  externalId    String
-  topic         String
+  externalId      String
+  topic           String
   /// Per-webhook shared secret where the provider issues one (WooCommerce).
   encryptedSecret String?
   createdAt       DateTime @default(now())
@@ -1659,16 +1677,16 @@ model IntegrationProductMapping {
   catalogProductId String?
   yukiziSku        String?
 
-  externalProductId String
+  externalProductId    String
   /// Empty string, never NULL, when the listing has no variant.
   ///
   /// Postgres treats NULLs as distinct in a unique index, so a nullable column
   /// here would make (integration, product, NULL) rows never collide — and
   /// every re-import would silently duplicate every simple product.
-  externalVariantId String  @default("")
-  externalSku       String?
-  externalListingId String?
-  externalTitle     String?
+  externalVariantId    String    @default("")
+  externalSku          String?
+  externalListingId    String?
+  externalTitle        String?
   /// Shopify only: the inventory_item_id. Setting a quantity on Shopify keys
   /// off this, not the variant id, so it has to be captured during import.
   externalInventoryRef String?
@@ -1681,8 +1699,8 @@ model IntegrationProductMapping {
   /// requires. Captured during import so a quantity update needs no extra call.
   externalProductType  String?
   /// Amazon only.
-  asin          String?
-  marketplaceId String?
+  asin                 String?
+  marketplaceId        String?
 
   /// MERCHANT for Shopify/Woo and Amazon MFN; AMAZON_FBA is display-only.
   fulfillmentChannel FulfillmentChannel       @default(MERCHANT)
@@ -1695,18 +1713,18 @@ model IntegrationProductMapping {
 
   /// Last quantity the channel reported, and when. Kept so an inventory
   /// difference can be shown to the seller without re-querying the channel.
-  externalQuantity   Int?
-  externalQuantityAt DateTime?
+  externalQuantity       Int?
+  externalQuantityAt     DateTime?
   /// Set when an import found the channel and Yukizi disagreeing about stock.
   /// Yukizi refuses to pick a winner on its own: the seller resolves it, and
   /// this is cleared. Nothing overwrites a quantity while this is set.
-  inventoryConflictAt DateTime?
+  inventoryConflictAt    DateTime?
   /// The Yukizi quantity at the moment the conflict was detected, so the
   /// comparison shown to the seller is the one that was actually flagged.
   conflictYukiziQuantity Int?
   /// Why automatic matching could not decide: 'SKU_MATCHES_MULTIPLE_PRODUCTS'
   /// | 'SKU_SHARED_BY_EXTERNAL_LISTINGS' | 'NO_SKU'.
-  conflictReason String?
+  conflictReason         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1726,8 +1744,8 @@ model IntegrationProductMapping {
 /// The inventory ledger. Every quantity change — from a channel, from Yukizi,
 /// from an order — lands here first and is applied exactly once.
 model InventoryEvent {
-  id       String  @id @default(uuid())
-  sellerId String
+  id            String  @id @default(uuid())
+  sellerId      String
   /// Null for changes that originate inside Yukizi.
   integrationId String?
   mappingId     String?
@@ -1780,14 +1798,14 @@ model IntegrationSyncJob {
   /// Free-form job input (mapping ids, quantities, cursors).
   payload Json?
 
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(5)
+  attempts         Int       @default(0)
+  maxAttempts      Int       @default(5)
   /// Exponential backoff target; the runner only picks up due jobs.
-  runAfter    DateTime  @default(now())
-  startedAt   DateTime?
-  completedAt DateTime?
+  runAfter         DateTime  @default(now())
+  startedAt        DateTime?
+  completedAt      DateTime?
   /// Set when a failure is not worth retrying (revoked token, bad scope).
-  permanentFailure Boolean @default(false)
+  permanentFailure Boolean   @default(false)
   lastError        String?
 
   /// Progress for the UI: "142 of 327".
@@ -1811,8 +1829,8 @@ model IntegrationLog {
   sellerId      String
   integrationId String?
 
-  action String
-  status IntegrationLogStatus
+  action    String
+  status    IntegrationLogStatus
   /// SKU or external id the line refers to, when it refers to one.
   entityRef String?
   /// Seller-readable sentence.
@@ -1843,7 +1861,7 @@ model IntegrationOAuthState {
 
   expiresAt  DateTime
   consumedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   @@index([sellerId, provider])
   @@index([expiresAt])
@@ -1876,14 +1894,14 @@ model IntegrationExternalOrder {
   externalOrderId String
   orderNumber     String?
 
-  placedAt DateTime
+  placedAt        DateTime
   /// Provider status verbatim (e.g. 'fulfilled', 'processing', 'Shipped').
-  status   String?
+  status          String?
   /// Provider payment status where reported.
   financialStatus String?
   currency        String?
-  totalAmount     Decimal @db.Decimal(12, 2)
-  itemCount       Int     @default(0)
+  totalAmount     Decimal  @db.Decimal(12, 2)
+  itemCount       Int      @default(0)
 
   /// Line items as [{ sku, quantity, price, title }]. JSON because they are
   /// only ever read as a whole, alongside their order.
