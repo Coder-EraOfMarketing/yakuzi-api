@@ -67,6 +67,23 @@ const DEFAULT_TEST_BUYER_PHONES = '8500237151';
 const INSTAGRAM_TOKEN_KEY = 'instagramAccessToken';
 const MASKED_SECRET = '••••••••';
 
+/**
+ * Per-order overrides of the test/real split.
+ *
+ * TEST_BUYER_PHONES classifies by WHO placed an order, which cannot express
+ * "these two are real orders, everything else from that number was me
+ * testing" — and that is the situation an admin actually ends up in. These
+ * two lists hold the exceptions and they win over the phone rule.
+ *
+ * Kept in SystemSetting rather than a column on Order because the deploy runs
+ * `prisma generate` but never `prisma migrate deploy`: a new column would
+ * exist in the Prisma client and not in the database.
+ */
+const REAL_ORDER_IDS_KEY = 'realOrderIds';
+const TEST_ORDER_IDS_KEY = 'testOrderIds';
+
+export type OrderClassification = 'real' | 'test' | 'auto';
+
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -104,15 +121,64 @@ export class AdminService {
    * payment (OrdersService.cancelOrder refuses those anyway - filtering
    * them out here just skips a guaranteed-failure call per such order).
    */
-  private cancellableTestOrdersWhere() {
+  /**
+   * The per-order exceptions to the phone rule. Unreadable settings degrade to
+   * "no overrides" — the phone rule alone — rather than failing an orders list.
+   */
+  private async getOrderOverrides(): Promise<{ real: string[]; test: string[] }> {
+    const parse = (value?: string) =>
+      (value ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
+
+    try {
+      const rows = await this.prisma.systemSetting.findMany({
+        where: { key: { in: [REAL_ORDER_IDS_KEY, TEST_ORDER_IDS_KEY] } },
+      });
+      const byKey = new Map(rows.map((r) => [r.key, r.value]));
+      return {
+        real: parse(byKey.get(REAL_ORDER_IDS_KEY)),
+        test: parse(byKey.get(TEST_ORDER_IDS_KEY)),
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Could not read order classification overrides: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+      return { real: [], test: [] };
+    }
+  }
+
+  /** Is this order a test one, by the phone rule plus any override on it. */
+  private classify(
+    order: { id: string; buyer?: { phone?: string | null } | null },
+    testPhones: string[],
+    overrides: { real: string[]; test: string[] },
+  ): { isTest: boolean; classification: OrderClassification } {
+    if (overrides.real.includes(order.id)) return { isTest: false, classification: 'real' };
+    if (overrides.test.includes(order.id)) return { isTest: true, classification: 'test' };
+    const phone = order.buyer?.phone ?? '';
+    return { isTest: testPhones.includes(phone), classification: 'auto' };
+  }
+
+  private async cancellableTestOrdersWhere(): Promise<Prisma.OrderWhereInput> {
     const uncancelable: OrderStatus[] = [
       OrderStatus.SHIPPED,
       OrderStatus.DELIVERED,
       OrderStatus.RETURNED,
       OrderStatus.CANCELLED,
     ];
+    const overrides = await this.getOrderOverrides();
     return {
-      buyer: { phone: { in: this.getTestBuyerPhones() } },
+      // An order an admin has marked REAL is never swept up by the bulk
+      // cancel, whoever placed it. That guarantee is the whole point of the
+      // override — losing a genuine customer order to a test cleanup would be
+      // unrecoverable.
+      ...(overrides.real.length ? { id: { notIn: overrides.real } } : {}),
+      OR: [
+        { buyer: { phone: { in: this.getTestBuyerPhones() } } },
+        ...(overrides.test.length ? [{ id: { in: overrides.test } }] : []),
+      ],
       orderStatus: { notIn: uncancelable },
       paymentStatus: { notIn: [PaymentStatus.SUCCESS, PaymentStatus.PARTIAL] },
     };
@@ -124,7 +190,7 @@ export class AdminService {
    * bulk cancel rather than committing to it blind.
    */
   async countCancellableTestOrders(): Promise<number> {
-    return this.prisma.order.count({ where: this.cancellableTestOrdersWhere() });
+    return this.prisma.order.count({ where: await this.cancellableTestOrdersWhere() });
   }
 
   /**
@@ -146,7 +212,7 @@ export class AdminService {
     total: number;
   }> {
     const testOrders = await this.prisma.order.findMany({
-      where: this.cancellableTestOrdersWhere(),
+      where: await this.cancellableTestOrdersWhere(),
       select: { id: true, buyerId: true },
     });
 
@@ -1211,8 +1277,28 @@ export class AdminService {
       }
     }
 
+    const testPhones = this.getTestBuyerPhones();
+    const overrides = await this.getOrderOverrides();
+
     if (query.includeTestOrders !== 'true') {
-      where.buyer = { phone: { notIn: this.getTestBuyerPhones() } };
+      // Hidden when the phone rule OR an explicit test override says test —
+      // unless the order is explicitly marked real, which beats both.
+      // Composed into AND so it cannot collide with the search filter's OR.
+      const notTest: Prisma.OrderWhereInput = {
+        OR: [
+          ...(overrides.real.length ? [{ id: { in: overrides.real } }] : []),
+          {
+            AND: [
+              { buyer: { phone: { notIn: testPhones } } },
+              ...(overrides.test.length ? [{ id: { notIn: overrides.test } }] : []),
+            ],
+          },
+        ],
+      };
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        notTest,
+      ];
     }
 
     const [data, total] = await Promise.all([
@@ -1259,7 +1345,51 @@ export class AdminService {
       this.prisma.order.count({ where }),
     ]);
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    // Tell the caller WHY each row is where it is, so the admin screen can
+    // offer the right action ("mark as test" / "mark as real") instead of
+    // making someone guess which rule caught it.
+    const rows = data.map((order) => {
+      const { isTest, classification } = this.classify(order, testPhones, overrides);
+      return { ...order, isTestOrder: isTest, classification };
+    });
+
+    return { data: rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * Pin one order to the real or the test side, or hand it back to the phone
+   * rule with 'auto'. An id appears in at most one list, so the two can never
+   * disagree about the same order.
+   */
+  async setOrderClassification(orderId: string, classification: OrderClassification) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const { real, test } = await this.getOrderOverrides();
+    const nextReal = new Set(real);
+    const nextTest = new Set(test);
+    nextReal.delete(orderId);
+    nextTest.delete(orderId);
+    if (classification === 'real') nextReal.add(orderId);
+    if (classification === 'test') nextTest.add(orderId);
+
+    const write = (key: string, value: string) =>
+      this.prisma.systemSetting.upsert({
+        where: { key },
+        update: { value },
+        create: { key, value },
+      });
+
+    await this.prisma.$transaction([
+      write(REAL_ORDER_IDS_KEY, Array.from(nextReal).join(',')),
+      write(TEST_ORDER_IDS_KEY, Array.from(nextTest).join(',')),
+    ]);
+
+    this.logger.log(`Order ${orderId} classified as ${classification}`);
+    return { orderId, classification };
   }
 
   async getOrderById(orderId: string) {
