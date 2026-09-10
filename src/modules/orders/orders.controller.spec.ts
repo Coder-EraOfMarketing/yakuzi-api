@@ -17,15 +17,36 @@ const build = () => {
   const invoiceEmailService = {
     resendForOrder: jest.fn(),
   };
+  const invoicePdfService = {
+    render: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.3 fake')),
+    filename: jest.fn().mockReturnValue('YKZ-INV-2026-27-00323711.pdf'),
+  };
 
   const controller = new OrdersController(
     {} as never,
     {} as never,
     invoiceService as never,
     invoiceEmailService as never,
+    invoicePdfService as never,
   );
 
-  return { controller, invoiceService, invoiceEmailService };
+  return { controller, invoiceService, invoiceEmailService, invoicePdfService };
+};
+
+/** Minimal express Response stand-in that records what was written to it. */
+const fakeResponse = () => {
+  const headers: Record<string, string> = {};
+  const res = {
+    headers,
+    body: undefined as Buffer | undefined,
+    setHeader: jest.fn((key: string, value: string) => {
+      headers[key] = value;
+    }),
+    send: jest.fn((payload: Buffer) => {
+      res.body = payload;
+    }),
+  };
+  return res;
 };
 
 // This is the ONLY place in the codebase that turns an InvoiceEmailOutcome
@@ -118,5 +139,108 @@ describe('OrdersController.emailOrderInvoices', () => {
     expect((error as ServiceUnavailableException).message).not.toMatch(
       /send-failed/i,
     );
+  });
+});
+
+/**
+ * The download reuses getInvoicesForOrder purely for its access rules — that
+ * method returns a SELLER only the invoices they supplied, so the seller
+ * isolation on a shared order is inherited rather than re-implemented here.
+ * These pin that inheritance down: if the download ever stops going through
+ * it, a seller could pull a co-seller's invoice, which names their customer.
+ */
+describe('OrdersController.downloadOrderInvoicePdf', () => {
+  const SELLER_ID = '11111111-2222-3333-4444-555555555555';
+
+  it('sends the PDF as an attachment named after the invoice', async () => {
+    const { controller, invoiceService, invoicePdfService } = build();
+    const invoice = { invoiceNumber: 'YKZ/INV/2026-27/00323711', sellerId: SELLER_ID };
+    invoiceService.getInvoicesForOrder.mockResolvedValue([invoice]);
+    const res = fakeResponse();
+
+    await controller.downloadOrderInvoicePdf(
+      USER_ID,
+      ORDER_ID,
+      SELLER_ID,
+      res as never,
+    );
+
+    expect(invoicePdfService.render).toHaveBeenCalledWith(invoice);
+    expect(res.headers['Content-Type']).toBe('application/pdf');
+    expect(res.headers['Content-Disposition']).toBe(
+      'attachment; filename="YKZ-INV-2026-27-00323711.pdf"',
+    );
+    expect(res.body?.toString()).toContain('%PDF');
+  });
+
+  it('never lets a shared cache keep a document naming the buyer', async () => {
+    const { controller, invoiceService } = build();
+    invoiceService.getInvoicesForOrder.mockResolvedValue([
+      { invoiceNumber: 'x', sellerId: SELLER_ID },
+    ]);
+    const res = fakeResponse();
+
+    await controller.downloadOrderInvoicePdf(
+      USER_ID,
+      ORDER_ID,
+      SELLER_ID,
+      res as never,
+    );
+
+    expect(res.headers['Cache-Control']).toBe('private, no-store');
+  });
+
+  it('picks the right invoice off a multi-seller order', async () => {
+    const { controller, invoiceService, invoicePdfService } = build();
+    const wanted = { invoiceNumber: 'wanted', sellerId: SELLER_ID };
+    invoiceService.getInvoicesForOrder.mockResolvedValue([
+      { invoiceNumber: 'other', sellerId: 'aaaaaaaa-2222-3333-4444-555555555555' },
+      wanted,
+    ]);
+
+    await controller.downloadOrderInvoicePdf(
+      USER_ID,
+      ORDER_ID,
+      SELLER_ID,
+      fakeResponse() as never,
+    );
+
+    expect(invoicePdfService.render).toHaveBeenCalledWith(wanted);
+  });
+
+  it('404s when that seller supplied nothing on the order', async () => {
+    const { controller, invoiceService, invoicePdfService } = build();
+    invoiceService.getInvoicesForOrder.mockResolvedValue([
+      { invoiceNumber: 'other', sellerId: 'aaaaaaaa-2222-3333-4444-555555555555' },
+    ]);
+
+    await expect(
+      controller.downloadOrderInvoicePdf(
+        USER_ID,
+        ORDER_ID,
+        SELLER_ID,
+        fakeResponse() as never,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(invoicePdfService.render).not.toHaveBeenCalled();
+  });
+
+  it('runs the ownership guard before rendering anything', async () => {
+    const { controller, invoiceService, invoicePdfService } = build();
+    invoiceService.getInvoicesForOrder.mockRejectedValue(
+      new ForbiddenException('This order belongs to another account'),
+    );
+
+    await expect(
+      controller.downloadOrderInvoicePdf(
+        USER_ID,
+        ORDER_ID,
+        SELLER_ID,
+        fakeResponse() as never,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(invoicePdfService.render).not.toHaveBeenCalled();
   });
 });

@@ -37,6 +37,17 @@ export interface InvoiceEmailOutcome {
   reason?: InvoiceEmailFailure;
 }
 
+/**
+ * One invoice with its rendered PDF, still tied to the order it came from —
+ * the buyer's mail carries all of them, the ops copy only those being issued
+ * for the first time, and neither should re-render a PDF the other made.
+ */
+interface OrderDocument {
+  orderId: string;
+  invoice: Invoice;
+  attachment: MailAttachment;
+}
+
 @Injectable()
 export class InvoiceEmailService {
   private readonly logger = new Logger(InvoiceEmailService.name);
@@ -80,13 +91,18 @@ export class InvoiceEmailService {
       const ids = Array.from(new Set(orderIds.filter(Boolean)));
       if (ids.length === 0) return { sent: false, reason: 'nothing-to-send' };
 
-      const pending = opts.force
-        ? ids
-        : (
-            await Promise.all(
-              ids.map(async (id) => ((await this.alreadySent(id)) ? null : id)),
-            )
-          ).filter((id): id is string => id !== null);
+      // Orders with no ledger entry yet — the ones being invoiced for the
+      // FIRST time. Also what decides whether the ops inbox gets a copy: a
+      // buyer pressing "email me my invoice" again must not put another copy
+      // in front of the team.
+      const unsent = (
+        await Promise.all(
+          ids.map(async (id) => ((await this.alreadySent(id)) ? null : id)),
+        )
+      ).filter((id): id is string => id !== null);
+      const firstIssue = new Set(unsent);
+
+      const pending = opts.force ? ids : unsent;
 
       if (pending.length === 0) {
         return { sent: false, reason: 'nothing-to-send' };
@@ -128,51 +144,40 @@ export class InvoiceEmailService {
       }
 
       const recipient = orders[0].buyer?.email?.trim();
-      if (!recipient) {
-        // Buyers can register with phone OTP alone, so User.email may be null and
-        // there is genuinely nowhere to send. Not an error — but countable, so we
-        // can measure how often it happens.
-        this.logger.warn(
-          `invoice-email skipped: buyer ${orders[0].buyerId} has no email address (orders=${pending.length})`,
-        );
-        return { sent: false, reason: 'no-recipient' };
-      }
 
-      const invoices: Invoice[] = [];
+      // Rendered BEFORE the recipient check, not after: a buyer with no email
+      // on file is precisely when the ops copy matters, and it needs the same
+      // documents. Each PDF is rendered once and both sends attach it.
+      const documents: OrderDocument[] = [];
       for (const order of orders) {
-        invoices.push(
-          ...(await this.invoiceService.buildInvoicesForOrder(order.id)),
-        );
+        for (const invoice of await this.invoiceService.buildInvoicesForOrder(
+          order.id,
+        )) {
+          documents.push({
+            orderId: order.id,
+            invoice,
+            attachment: {
+              filename: this.invoicePdfService.filename(invoice),
+              content: await this.invoicePdfService.render(invoice),
+              contentType: 'application/pdf',
+            },
+          });
+        }
       }
-      if (invoices.length === 0) {
+      if (documents.length === 0) {
         return { sent: false, reason: 'nothing-to-send' };
       }
 
-      const attachments: MailAttachment[] = [];
-      for (const invoice of invoices) {
-        attachments.push({
-          filename: this.invoicePdfService.filename(invoice),
-          content: await this.invoicePdfService.render(invoice),
-          contentType: 'application/pdf',
-        });
-      }
+      const outcome = await this.sendToBuyer(orders, recipient, documents);
 
-      const sent = await this.sendWithRetry(recipient, invoices, attachments);
-      if (!sent) {
-        this.logger.error(
-          `invoice-email: send failed after retries for buyer ${orders[0].buyerId} (orders=${orders.length})`,
-        );
-        return { sent: false, reason: 'send-failed' };
-      }
-
-      for (const order of orders) {
-        await this.writeLedger(order.buyerId, order.id);
-      }
-
-      this.logger.log(
-        `invoice-email sent to ${redactEmail(recipient)} (orders=${orders.length}, invoices=${invoices.length})`,
+      // Attempted whatever happened above, and structurally unable to change
+      // what the buyer's caller sees: the outcome is already decided.
+      await this.sendOpsCopy(
+        documents.filter((d) => firstIssue.has(d.orderId)),
+        recipient,
       );
-      return { sent: true };
+
+      return outcome;
     } catch (error) {
       // Nothing here may surface to the payment path.
       this.logger.error(`invoice-email failed: ${(error as Error).message}`);
@@ -187,6 +192,109 @@ export class InvoiceEmailService {
    */
   async resendForOrder(orderId: string): Promise<InvoiceEmailOutcome> {
     return this.sendForOrders([orderId], { force: true });
+  }
+
+  /** The buyer's own copy, and the ledger entry that stops it being sent twice. */
+  private async sendToBuyer(
+    orders: { id: string; buyerId: string }[],
+    recipient: string | undefined,
+    documents: OrderDocument[],
+  ): Promise<InvoiceEmailOutcome> {
+    if (!recipient) {
+      // Buyers can register with phone OTP alone, so User.email may be null and
+      // there is genuinely nowhere to send. Not an error — but countable, so we
+      // can measure how often it happens.
+      this.logger.warn(
+        `invoice-email skipped: buyer ${orders[0].buyerId} has no email address (orders=${orders.length})`,
+      );
+      return { sent: false, reason: 'no-recipient' };
+    }
+
+    const invoices = documents.map((d) => d.invoice);
+    const sent = await this.sendWithRetry(
+      recipient,
+      invoices,
+      documents.map((d) => d.attachment),
+    );
+    if (!sent) {
+      this.logger.error(
+        `invoice-email: send failed after retries for buyer ${orders[0].buyerId} (orders=${orders.length})`,
+      );
+      return { sent: false, reason: 'send-failed' };
+    }
+
+    for (const order of orders) {
+      await this.writeLedger(order.buyerId, order.id);
+    }
+
+    this.logger.log(
+      `invoice-email sent to ${redactEmail(recipient)} (orders=${orders.length}, invoices=${invoices.length})`,
+    );
+    return { sent: true };
+  }
+
+  /**
+   * The operations copy: the same PDFs, to the Admin Alert Email in platform
+   * settings, so someone at Yukizi holds every invoice the platform issues
+   * without having to ask the buyer for it.
+   *
+   * A separate message rather than a bcc on the buyer's, for two reasons: the
+   * buyer's mail is addressed to them and reads oddly in a shared inbox, and a
+   * bcc would send nothing at all when the buyer has no email address — the one
+   * case where the team is the only holder of the document.
+   *
+   * Never throws and never reports upward. If nobody has set an admin address,
+   * this is silently a no-op.
+   *
+   * Only invoices being issued for the FIRST time reach here, so a buyer
+   * resending their own invoice cannot duplicate it. There is deliberately no
+   * ops-side ledger — a Notification row belongs to a user, and writing one
+   * against the buyer would put "sent to ops" in the buyer's own bell. The one
+   * consequence is that if the BUYER's send fails, a later resend re-sends this
+   * copy too. A duplicate in an internal inbox is a far smaller problem than a
+   * missing invoice, so that trade is deliberate.
+   */
+  private async sendOpsCopy(
+    documents: OrderDocument[],
+    buyerRecipient: string | undefined,
+  ): Promise<void> {
+    if (documents.length === 0) return;
+
+    try {
+      const to = (await this.mailService.resolveAdminRecipient())?.trim();
+      if (!to) return;
+      // An install where the admin address IS the buyer would otherwise get the
+      // same PDFs twice.
+      if (buyerRecipient && to.toLowerCase() === buyerRecipient.toLowerCase()) {
+        return;
+      }
+
+      const invoices = documents.map((d) => d.invoice);
+      const delivered = await this.deliver({
+        to,
+        subject:
+          invoices.length === 1
+            ? `New order ${invoices[0].orderReference} — invoice ${invoices[0].invoiceNumber}`
+            : `New order — ${invoices.length} tax invoices`,
+        text: this.opsPlainBody(invoices),
+        html: this.opsHtmlBody(invoices),
+        attachments: documents.map((d) => d.attachment),
+      });
+
+      if (delivered) {
+        this.logger.log(
+          `invoice-email ops copy sent to ${redactEmail(to)} (invoices=${invoices.length})`,
+        );
+      } else {
+        this.logger.error(
+          `invoice-email ops copy failed after retries (invoices=${invoices.length})`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `invoice-email ops copy failed: ${(error as Error).message}`,
+      );
+    }
   }
 
   private async alreadySent(orderId: string): Promise<boolean> {
@@ -224,14 +332,23 @@ export class InvoiceEmailService {
         ? `Your Yukizi tax invoice ${invoices[0].invoiceNumber}`
         : `Your Yukizi tax invoices (${invoices.length})`;
 
-    const message = {
+    return this.deliver({
       to,
       subject,
       text: this.plainBody(invoices),
       html: this.htmlBody(invoices),
       attachments,
-    };
+    });
+  }
 
+  /** Send one message, retrying only what SMTP says is worth retrying. */
+  private async deliver(message: {
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+    attachments: MailAttachment[];
+  }): Promise<boolean> {
     for (let attempt = 0; attempt < this.backoffMs.length; attempt++) {
       const result = await this.mailService.sendMail(message);
       if (result.sent) return true;
@@ -244,6 +361,55 @@ export class InvoiceEmailService {
     }
 
     return false;
+  }
+
+  /**
+   * Written for whoever is watching the shared inbox: who bought, from which
+   * seller, for how much. The PDFs carry the detail.
+   */
+  private opsPlainBody(invoices: Invoice[]): string {
+    const total = invoices
+      .reduce((sum, i) => sum + i.totalAmount, 0)
+      .toFixed(2);
+    const list = invoices
+      .map(
+        (i) =>
+          `  ${i.invoiceNumber}  ${i.seller.name || 'Unknown seller'}  Rs. ${i.totalAmount.toFixed(2)}`,
+      )
+      .join('\n');
+    return [
+      `Order ${invoices[0].orderReference}`,
+      `Buyer: ${invoices[0].buyer.name || 'Not given'}`,
+      '',
+      `${invoices.length === 1 ? 'Invoice' : 'Invoices'} attached:`,
+      list,
+      '',
+      `Total: Rs. ${total}`,
+      '',
+      'One invoice per seller — the seller is the supplier of record.',
+      'Every invoice is also downloadable from the order in the admin panel.',
+      '',
+      'Yukizi',
+    ].join('\n');
+  }
+
+  private opsHtmlBody(invoices: Invoice[]): string {
+    const rows = invoices
+      .map(
+        (i) =>
+          `<tr><td style="padding:6px 12px 6px 0;color:#475569">${this.escape(i.invoiceNumber)}</td>` +
+          `<td style="padding:6px 12px 6px 0;color:#475569">${this.escape(i.seller.name) || 'Unknown seller'}</td>` +
+          `<td style="padding:6px 0;text-align:right;font-weight:600;color:#0f172a">Rs. ${i.totalAmount.toFixed(2)}</td></tr>`,
+      )
+      .join('');
+
+    return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:560px">
+  <p style="font-size:18px;font-weight:700;color:#593696;margin:0 0 16px">Yukizi</p>
+  <p style="margin:0 0 4px"><strong>Order ${this.escape(invoices[0].orderReference)}</strong></p>
+  <p style="margin:0 0 16px;color:#475569">Buyer: ${this.escape(invoices[0].buyer.name) || 'Not given'}</p>
+  <table style="border-collapse:collapse;margin:0 0 16px">${rows}</table>
+  <p style="color:#475569;font-size:12px">One invoice per seller — the seller is the supplier of record. Every invoice is also downloadable from the order in the admin panel.</p>
+</div>`;
   }
 
   private plainBody(invoices: Invoice[]): string {

@@ -14,7 +14,9 @@ import {
   UnprocessableEntityException,
   ServiceUnavailableException,
   Logger,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -33,6 +35,7 @@ import { ShiprocketService } from './shiprocket.service';
 import { SelfShipTrackingDto } from './dto/self-ship-tracking.dto';
 import { InvoiceService } from './invoice.service';
 import { InvoiceEmailService } from './invoice-email.service';
+import { InvoicePdfService } from './invoice-pdf.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { UpdateShippingDetailsDto } from './dto/update-shipping-details.dto';
@@ -49,6 +52,7 @@ export class OrdersController {
     private readonly shiprocketService: ShiprocketService,
     private readonly invoiceService: InvoiceService,
     private readonly invoiceEmailService: InvoiceEmailService,
+    private readonly invoicePdfService: InvoicePdfService,
   ) {}
 
   // ──────────────────────────────────────────────
@@ -131,6 +135,51 @@ export class OrdersController {
   ) {
     const data = await this.invoiceService.getInvoicesForOrder(userId, orderId);
     return { message: 'Invoices retrieved successfully', data };
+  }
+
+  @Get(':id/invoices/:sellerId/pdf')
+  @Roles(Role.BUYER, Role.SELLER, Role.ADMIN)
+  @ApiOperation({
+    summary: "One seller's tax invoice for an order, as a PDF download",
+  })
+  @ApiResponse({ status: 200, description: 'PDF returned' })
+  @ApiResponse({ status: 403, description: 'Order belongs to another account' })
+  @ApiResponse({
+    status: 404,
+    description: 'Order not found, or that seller supplied nothing on it',
+  })
+  async downloadOrderInvoicePdf(
+    @CurrentUser('id') userId: string,
+    @Param('id', ParseUUIDPipe) orderId: string,
+    @Param('sellerId', ParseUUIDPipe) sellerId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    // The same guarded read the JSON endpoint uses, for the same reason: it
+    // throws for someone else's order, and for a SELLER it returns only the
+    // invoices they supplied — so a seller cannot pull a co-seller's invoice
+    // off an order they happen to share. Admins get any of them.
+    const invoices = await this.invoiceService.getInvoicesForOrder(
+      userId,
+      orderId,
+    );
+    const invoice = invoices.find((i) => i.sellerId === sellerId);
+    if (!invoice) {
+      throw new NotFoundException(
+        'There is no invoice for that seller on this order.',
+      );
+    }
+
+    const pdf = await this.invoicePdfService.render(invoice);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${this.invoicePdfService.filename(invoice)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    // A tax invoice names the buyer and their address: never let a shared
+    // cache keep a copy.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(pdf);
   }
 
   // SELLER intentionally excluded: resendForOrder always emails the order's

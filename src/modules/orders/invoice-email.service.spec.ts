@@ -9,6 +9,7 @@ const invoice = (): Invoice => ({
   invoiceNumber: 'YKZ/INV/2026-27/00323711',
   invoiceDate: '2026-08-06T10:00:00.000Z',
   orderReference: 'YKZ/ORD/2026-27/00323711',
+  sellerId: 'seller-1',
   seller: {
     name: 'Galazy',
     gstin: null,
@@ -41,6 +42,8 @@ const build = (
     buyerEmail?: string | null;
     ledgerHit?: boolean;
     mailResults?: { sent: boolean; retryable: boolean }[];
+    /** The Admin Alert Email from platform settings; undefined = not set. */
+    opsEmail?: string;
   } = {},
 ) => {
   const prisma = {
@@ -78,6 +81,9 @@ const build = (
       .mockImplementation(() =>
         Promise.resolve(results[Math.min(call++, results.length - 1)]),
       ),
+    // No Admin Alert Email unless a test sets one, so the assertions elsewhere
+    // in this file still count the buyer's message alone.
+    resolveAdminRecipient: jest.fn().mockResolvedValue(over.opsEmail),
   };
 
   const invoices = {
@@ -258,5 +264,111 @@ describe('InvoiceEmailService', () => {
       prisma.notification.create.mock.calls as { data: { userId: string } }[][]
     )[0][0];
     expect(createArgs.data.userId).toBe('buyer-1');
+  });
+});
+
+/**
+ * The operations copy exists so someone at Yukizi holds every invoice the
+ * platform issues without asking the buyer for it. Two properties matter more
+ * than its contents: it must never change what the buyer's caller is told —
+ * that answer maps straight onto an HTTP status — and it must still go out
+ * when the buyer has no email, which is the one case where the team is the
+ * only holder of the document.
+ */
+describe('InvoiceEmailService ops copy', () => {
+  const OPS = 'orders@yukizi.com';
+
+  it('sends nothing extra when no Admin Alert Email is configured', async () => {
+    const { service, mail } = build();
+
+    await service.sendForOrders([ORDER_ID]);
+
+    expect(mail.sendMail).toHaveBeenCalledTimes(1);
+    expect((mail.sendMail.mock.calls as SendMailOptions[][])[0][0].to).toBe(
+      'buyer@example.com',
+    );
+  });
+
+  it('sends the same PDFs on to the ops inbox as a separate message', async () => {
+    const { service, mail } = build({ opsEmail: OPS });
+
+    const outcome = await service.sendForOrders([ORDER_ID]);
+
+    expect(outcome).toEqual({ sent: true });
+    expect(mail.sendMail).toHaveBeenCalledTimes(2);
+
+    const [buyerMail, opsMail] = (
+      mail.sendMail.mock.calls as SendMailOptions[][]
+    ).map((c) => c[0]);
+    expect(buyerMail.to).toBe('buyer@example.com');
+    expect(opsMail.to).toBe(OPS);
+    expect(opsMail.attachments).toEqual(buyerMail.attachments);
+    // Addressed to the team, not the customer.
+    expect(opsMail.subject).toContain('New order');
+    expect(opsMail.text).toContain('Buyer: Arko');
+  });
+
+  it('still reaches ops when the buyer has no email address', async () => {
+    const { service, mail, prisma } = build({
+      buyerEmail: null,
+      opsEmail: OPS,
+    });
+
+    const outcome = await service.sendForOrders([ORDER_ID]);
+
+    // The BUYER's outcome is unchanged — the controller turns this into a 422
+    // telling them to add an email address.
+    expect(outcome).toEqual({ sent: false, reason: 'no-recipient' });
+    expect(mail.sendMail).toHaveBeenCalledTimes(1);
+    expect((mail.sendMail.mock.calls as SendMailOptions[][])[0][0].to).toBe(
+      OPS,
+    );
+    // Nothing was emailed to the buyer, so nothing may claim it was.
+    expect(prisma.notification.create).not.toHaveBeenCalled();
+  });
+
+  it('does not copy ops again when a buyer resends an already-issued invoice', async () => {
+    const { service, mail } = build({ ledgerHit: true, opsEmail: OPS });
+
+    const outcome = await service.sendForOrders([ORDER_ID], { force: true });
+
+    expect(outcome).toEqual({ sent: true });
+    expect(mail.sendMail).toHaveBeenCalledTimes(1);
+    expect((mail.sendMail.mock.calls as SendMailOptions[][])[0][0].to).toBe(
+      'buyer@example.com',
+    );
+  });
+
+  it('leaves the buyer outcome alone when the ops copy fails', async () => {
+    const { service, prisma } = build({
+      opsEmail: OPS,
+      // Buyer's message sends; the ops one is rejected permanently.
+      mailResults: [
+        { sent: true, retryable: false },
+        { sent: false, retryable: false },
+      ],
+    });
+
+    const outcome = await service.sendForOrders([ORDER_ID]);
+
+    expect(outcome).toEqual({ sent: true });
+    expect(prisma.notification.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send twice when the ops address is the buyer', async () => {
+    const { service, mail } = build({ opsEmail: 'buyer@example.com' });
+
+    await service.sendForOrders([ORDER_ID]);
+
+    expect(mail.sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('never rejects when resolving the ops address throws', async () => {
+    const { service, mail } = build({ opsEmail: OPS });
+    mail.resolveAdminRecipient.mockRejectedValue(new Error('db down'));
+
+    await expect(service.sendForOrders([ORDER_ID])).resolves.toEqual({
+      sent: true,
+    });
   });
 });
