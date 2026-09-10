@@ -49,6 +49,9 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { SellersService } from '../sellers/sellers.service';
 import { UpdateSellerProfileDto } from '../sellers/dto/update-seller-profile.dto';
 import { MailService } from '../mail/mail.service';
+import { PayoutEmailService } from '../settlements/payout-email.service';
+import { CommissionInvoiceService } from '../settlements/commission-invoice.service';
+import { CommissionInvoicePdfService } from '../settlements/commission-invoice-pdf.service';
 import { ProductsService } from '../products/products.service';
 import { AdminCreateProductDto } from './dto/admin-create-product.dto';
 
@@ -96,6 +99,11 @@ export class AdminService {
     private readonly mailService: MailService,
     private readonly productsService: ProductsService,
     private readonly configService: ConfigService,
+    // Appended, never inserted: the specs construct this service positionally,
+    // so changing the existing order would break them silently.
+    private readonly payoutEmailService: PayoutEmailService,
+    private readonly commissionInvoiceService: CommissionInvoiceService,
+    private readonly commissionInvoicePdfService: CommissionInvoicePdfService,
   ) {}
 
   /**
@@ -2199,7 +2207,35 @@ export class AdminService {
     });
 
     this.logger.log(`Settlement ${targetId} marked as paid by admin`);
+
+    // Tell the seller, and give them the commission invoice for the fee that
+    // was withheld — until now they were paid a net figure with no document
+    // explaining the difference. Detached on purpose: this row records that
+    // money has moved, and an email that will not send must never undo it.
+    void this.payoutEmailService.settlementPaid(targetId);
+
     return updated;
+  }
+
+  /**
+   * The commission invoice for one settlement, as a PDF, for an admin to read
+   * BEFORE paying out — the whole point being to see the document before the
+   * seller does.
+   *
+   * Strictly read-only: it does not send, does not mark anything paid and does
+   * not touch the settlement's status. It goes through the same loader the
+   * payout email uses, so the preview is the document, not a lookalike.
+   */
+  async getCommissionInvoicePdf(
+    settlementId: string,
+  ): Promise<{ filename: string; pdf: Buffer }> {
+    const invoice = await this.commissionInvoiceService.forSettlement(settlementId);
+    if (!invoice) throw new NotFoundException('Settlement not found');
+
+    return {
+      filename: this.commissionInvoicePdfService.filename(invoice),
+      pdf: await this.commissionInvoicePdfService.render(invoice),
+    };
   }
 
   async syncSettlements() {

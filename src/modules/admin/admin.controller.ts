@@ -12,6 +12,7 @@ import {
   HttpStatus,
   ParseUUIDPipe,
   BadRequestException,
+  Res,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -19,6 +20,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -362,6 +364,29 @@ export class AdminController {
       dto.classification,
     );
     return { message: 'Order classification updated', data };
+  }
+
+  @Get('settlements/:id/commission-invoice')
+  @ApiOperation({
+    summary:
+      "Preview a settlement's commission invoice as a PDF, before paying out",
+  })
+  @ApiResponse({ status: 200, description: 'PDF returned' })
+  @ApiResponse({ status: 404, description: 'Settlement not found' })
+  async previewCommissionInvoice(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Read-only on purpose: nothing here sends the invoice or marks anything
+    // paid. It exists so an admin can read the document before the seller does.
+    const { filename, pdf } = await this.adminService.getCommissionInvoicePdf(id);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Content-Length', String(pdf.length));
+    // Names a business and its GSTIN: never let a shared cache keep a copy.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(pdf);
   }
 
   @Post('orders/cancel-test-orders')

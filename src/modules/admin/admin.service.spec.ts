@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { OrderStatus, PaymentStatus, Role } from '@prisma/client';
 
@@ -6,6 +7,19 @@ import { OrderStatus, PaymentStatus, Role } from '@prisma/client';
 // (e.g. TEST_BUYER_PHONES -> '8500237151'), matching the pre-config-change
 // behavior unless a specific test overrides `get` for its own key.
 const mockConfigService = { get: jest.fn().mockReturnValue(undefined) };
+
+// Marking a settlement paid now emails the seller their commission invoice.
+// Fire-and-forget, so every harness just needs something callable.
+const payoutEmailStub = { settlementPaid: jest.fn().mockResolvedValue(undefined) };
+
+// Previewing a commission invoice is read-only and only the settlements
+// screen uses it, so every other harness just needs something shaped right.
+const commissionInvoiceStub = { forSettlement: jest.fn().mockResolvedValue(null) };
+const commissionInvoicePdfStub = {
+  render: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.3 fake')),
+  filename: jest.fn().mockReturnValue('YKZ-COM-2026-27-15D8CB94.pdf'),
+};
+
 
 const baseOrder = {
   id: 'order-1',
@@ -39,6 +53,9 @@ const build = (pushResult: Record<string, unknown> = {}) => {
     {} as never,
     {} as never,
     mockConfigService as never,
+    payoutEmailStub as never,
+    commissionInvoiceStub as never,
+    commissionInvoicePdfStub as never,
   );
   return { service, prisma, ordersService };
 };
@@ -117,6 +134,9 @@ describe('AdminService.adminUpdateProduct — catalog product resolution', () =>
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -193,6 +213,9 @@ describe('AdminService.getSettlementsSummary — totals across all pages', () =>
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -268,6 +291,9 @@ describe('AdminService.getAllSettlements — pagination priority', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -426,6 +452,9 @@ describe('AdminService.getDashboard — Platform Revenue', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -512,6 +541,9 @@ describe('AdminService.approveUser — seller approval email', () => {
       mailService as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, mailService };
   };
@@ -601,6 +633,9 @@ describe('AdminService.adminCreateProductForSeller', () => {
       {} as never,
       productsService as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
 
     const dto = {
@@ -651,6 +686,9 @@ describe('AdminService.getAllOrders — test-order exclusion', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -723,6 +761,9 @@ describe('AdminService.countCancellableTestOrders', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
 
     const result = await service.countCancellableTestOrders();
@@ -751,6 +792,9 @@ describe('AdminService.cancelAllTestOrders', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma, ordersService };
   };
@@ -820,6 +864,9 @@ describe('AdminService.getAllProducts — other-sellers aggregation', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -928,6 +975,9 @@ describe('AdminService.updateSellerSelfShip', () => {
       {} as never,
       {} as never,
       {} as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -968,6 +1018,9 @@ describe('AdminService.getPublicSettings — SEO verification tokens', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service };
   };
@@ -999,7 +1052,8 @@ describe('AdminService.getPublicSettings — storefront SEO defaults', () => {
     const prisma = { systemSetting: { findMany: jest.fn().mockResolvedValue(rows) } };
     return new AdminService(
       prisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
+      commissionInvoiceStub as never, commissionInvoicePdfStub as never,
     );
   };
 
@@ -1042,7 +1096,8 @@ describe('AdminService.getPublicSettings — social profiles', () => {
     const prisma = { systemSetting: { findMany: jest.fn().mockResolvedValue(rows) } };
     return new AdminService(
       prisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
+      commissionInvoiceStub as never, commissionInvoicePdfStub as never,
     );
   };
 
@@ -1066,7 +1121,8 @@ describe('AdminService.getPublicSettings — support contact', () => {
     const mockConfigService = { get: jest.fn() };
     return new AdminService(
       mockPrisma as never, {} as never, {} as never, {} as never,
-      {} as never, {} as never, mockConfigService as never,
+      {} as never, {} as never, mockConfigService as never, payoutEmailStub as never,
+      commissionInvoiceStub as never, commissionInvoicePdfStub as never,
     );
   };
 
@@ -1128,6 +1184,9 @@ describe('AdminService — per-order test/real overrides', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -1261,6 +1320,9 @@ describe('AdminService.getDashboard — honours per-order overrides', () => {
       {} as never,
       {} as never,
       mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
     );
     return { service, prisma };
   };
@@ -1287,5 +1349,74 @@ describe('AdminService.getDashboard — honours per-order overrides', () => {
     const { service, prisma } = buildForDashboardOverrides();
     await service.getDashboard({});
     expect(prisma.systemSetting.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The preview an admin reads BEFORE paying out. It must be exactly the
+ * document the seller later receives — a lookalike would defeat the point of
+ * checking it — and it must never send anything or change a settlement.
+ */
+describe('AdminService.getCommissionInvoicePdf', () => {
+  const SETTLEMENT_ID = '15d8cb94-1111-2222-3333-444444444444';
+
+  const build = (invoice: unknown = { invoiceNumber: 'YKZ/COM/2026-27/15D8CB94' }) => {
+    const commissionInvoiceService = {
+      forSettlement: jest.fn().mockResolvedValue(invoice),
+    };
+    const commissionInvoicePdfService = {
+      render: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.3 fake')),
+      filename: jest.fn().mockReturnValue('YKZ-COM-2026-27-15D8CB94.pdf'),
+    };
+    const payoutEmail = { settlementPaid: jest.fn() };
+    const prisma = { sellerSettlement: { update: jest.fn() } };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      mockConfigService as never,
+      payoutEmail as never,
+      commissionInvoiceService as never,
+      commissionInvoicePdfService as never,
+    );
+    return { service, prisma, payoutEmail, commissionInvoiceService, commissionInvoicePdfService };
+  };
+
+  it('returns the PDF and a filename named after the invoice', async () => {
+    const { service, commissionInvoicePdfService } = build();
+
+    const result = await service.getCommissionInvoicePdf(SETTLEMENT_ID);
+
+    expect(result.filename).toBe('YKZ-COM-2026-27-15D8CB94.pdf');
+    expect(result.pdf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(commissionInvoicePdfService.render).toHaveBeenCalled();
+  });
+
+  it('builds it through the same loader the payout email uses', async () => {
+    const { service, commissionInvoiceService } = build();
+
+    await service.getCommissionInvoicePdf(SETTLEMENT_ID);
+
+    expect(commissionInvoiceService.forSettlement).toHaveBeenCalledWith(SETTLEMENT_ID);
+  });
+
+  it('sends nothing and changes nothing', async () => {
+    const { service, payoutEmail, prisma } = build();
+
+    await service.getCommissionInvoicePdf(SETTLEMENT_ID);
+
+    expect(payoutEmail.settlementPaid).not.toHaveBeenCalled();
+    expect(prisma.sellerSettlement.update).not.toHaveBeenCalled();
+  });
+
+  it('404s for a settlement that does not exist', async () => {
+    const { service } = build(null);
+
+    await expect(service.getCommissionInvoicePdf(SETTLEMENT_ID)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 });
