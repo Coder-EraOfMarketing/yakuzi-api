@@ -16,6 +16,8 @@ describe('AdminService admin-access rails', () => {
       {} as any, // products
       {} as any, // config
       {} as any, // payout email — nothing in here marks a settlement paid
+      {} as any, // commission invoice loader
+      {} as any, // commission invoice pdf
     );
 
   const adminRow = (id: string, permissions: string | null) => ({

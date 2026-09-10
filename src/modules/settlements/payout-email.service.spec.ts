@@ -1,4 +1,5 @@
 import { PayoutEmailService } from './payout-email.service';
+import type { CommissionInvoice } from './commission-invoice';
 import type { SendMailOptions } from '../mail/mail.service';
 
 /**
@@ -10,54 +11,56 @@ import type { SendMailOptions } from '../mail/mail.service';
 describe('PayoutEmailService', () => {
   const SETTLEMENT_ID = '15d8cb94-1111-2222-3333-444444444444';
 
+  const invoice = (over: Partial<CommissionInvoice> = {}): CommissionInvoice => ({
+    invoiceNumber: 'YKZ/COM/2026-27/15D8CB94',
+    invoiceDate: '2026-08-20T10:00:00.000Z',
+    orderReference: 'ABAF6047',
+    payoutReference: 'UTR12345',
+    issuer: {
+      name: 'Yukizi Market Services Private Limited',
+      gstin: '19ZZZZZ9999Z1Z9',
+      address: 'Kolkata',
+      state: 'West Bengal',
+      email: 'accounts@yukizi.com',
+    },
+    seller: {
+      name: 'Galazy Enterprises',
+      gstin: '19ABCDE1234F1Z5',
+      address: 'Kolkata',
+      state: 'West Bengal',
+      email: 'seller@example.com',
+    },
+    grossAmount: 1000,
+    commissionRatePercent: 15,
+    commission: 150,
+    gstRate: 18,
+    isIntraState: true,
+    cgst: 13.5,
+    sgst: 13.5,
+    igst: 0,
+    totalGst: 27,
+    totalCharged: 177,
+    netPaidToSeller: 823,
+    isTaxInvoice: true,
+    ...over,
+  });
+
   const build = (
     over: {
-      sellerEmail?: string | null;
-      settlement?: null;
-      settings?: Array<{ key: string; value: string }>;
+      invoice?: CommissionInvoice | null;
+      recipient?: string | null;
       mailSent?: boolean;
     } = {},
   ) => {
-    const prisma = {
-      sellerSettlement: {
-        findUnique: jest.fn().mockResolvedValue(
-          over.settlement === null
-            ? null
-            : {
-                id: SETTLEMENT_ID,
-                sellerId: 'seller-1',
-                grossAmount: 1000,
-                commission: 150,
-                commissionGst: 27,
-                netPayout: 823,
-                payoutReference: 'UTR12345',
-                payoutDate: new Date('2026-09-11T10:00:00Z'),
-                createdAt: new Date('2026-08-20T10:00:00Z'),
-                orderItem: { orderId: 'abaf6047-9999-8888-7777-666666666666' },
-                seller: {
-                  companyName: 'Galazy Enterprises',
-                  gstNumber: '19ABCDE1234F1Z5',
-                  address: '7th floor',
-                  city: 'Kolkata',
-                  state: 'West Bengal',
-                  pincode: '700048',
-                  email:
-                    over.sellerEmail === undefined
-                      ? 'seller@example.com'
-                      : over.sellerEmail,
-                },
-              },
+    const invoiceService = {
+      forSettlement: jest
+        .fn()
+        .mockResolvedValue(over.invoice === undefined ? invoice() : over.invoice),
+      recipientFor: jest
+        .fn()
+        .mockResolvedValue(
+          over.recipient === undefined ? 'seller@example.com' : over.recipient,
         ),
-      },
-      systemSetting: {
-        findMany: jest.fn().mockResolvedValue(
-          over.settings ?? [
-            { key: 'companyLegalName', value: 'Yukizi Market Services Private Limited' },
-            { key: 'companyGstin', value: '19ZZZZZ9999Z1Z9' },
-            { key: 'companyState', value: 'West Bengal' },
-          ],
-        ),
-      },
     };
     const mailService = {
       isConfigured: jest.fn().mockReturnValue(true),
@@ -70,11 +73,11 @@ describe('PayoutEmailService', () => {
       filename: jest.fn().mockReturnValue('YKZ-COM-2026-27-15D8CB94.pdf'),
     };
     const service = new PayoutEmailService(
-      prisma as never,
       mailService as never,
       pdfService as never,
+      invoiceService as never,
     );
-    return { service, prisma, mailService, pdfService };
+    return { service, invoiceService, mailService, pdfService };
   };
 
   it('emails the seller with the commission invoice attached', async () => {
@@ -90,6 +93,16 @@ describe('PayoutEmailService', () => {
     expect(sent.attachments?.[0].filename).toBe('YKZ-COM-2026-27-15D8CB94.pdf');
   });
 
+  it('sends exactly the document the admin previewed', async () => {
+    const { service, invoiceService, pdfService } = build();
+
+    await service.settlementPaid(SETTLEMENT_ID);
+
+    // Same loader the preview endpoint calls, so the two cannot drift.
+    expect(invoiceService.forSettlement).toHaveBeenCalledWith(SETTLEMENT_ID);
+    expect(pdfService.render).toHaveBeenCalledWith(invoice());
+  });
+
   it('shows the seller what was deducted and what reached them', async () => {
     const { service, mailService } = build();
 
@@ -103,25 +116,32 @@ describe('PayoutEmailService', () => {
   });
 
   it('never rejects when the settlement cannot be found', async () => {
-    const { service, mailService } = build({ settlement: null });
+    const { service, mailService } = build({ invoice: null });
 
     await expect(service.settlementPaid(SETTLEMENT_ID)).resolves.toBeUndefined();
     expect(mailService.sendMail).not.toHaveBeenCalled();
   });
 
   it('never rejects when the seller has no email address', async () => {
-    const { service, mailService } = build({ sellerEmail: null });
+    const { service, mailService } = build({ recipient: null });
 
     await expect(service.settlementPaid(SETTLEMENT_ID)).resolves.toBeUndefined();
     expect(mailService.sendMail).not.toHaveBeenCalled();
   });
 
-  it('never rejects when SMTP is unconfigured, and does not touch the database', async () => {
-    const { service, prisma, mailService } = build();
+  it('never rejects when SMTP is unconfigured, and does not load anything', async () => {
+    const { service, invoiceService, mailService } = build();
     mailService.isConfigured.mockReturnValue(false);
 
     await expect(service.settlementPaid(SETTLEMENT_ID)).resolves.toBeUndefined();
-    expect(prisma.sellerSettlement.findUnique).not.toHaveBeenCalled();
+    expect(invoiceService.forSettlement).not.toHaveBeenCalled();
+  });
+
+  it('never rejects when building the invoice throws', async () => {
+    const { service, invoiceService } = build();
+    invoiceService.forSettlement.mockRejectedValue(new Error('db down'));
+
+    await expect(service.settlementPaid(SETTLEMENT_ID)).resolves.toBeUndefined();
   });
 
   it('never rejects when rendering the PDF throws', async () => {
@@ -138,27 +158,15 @@ describe('PayoutEmailService', () => {
     expect(mailService.sendMail).toHaveBeenCalled();
   });
 
-  it('still pays the seller the courtesy of an email when no company GSTIN is set', async () => {
-    const { service, mailService, pdfService } = build({
-      settings: [{ key: 'companyLegalName', value: 'Yukizi' }],
+  it('still pays the seller the courtesy of an email when the document is only a statement', async () => {
+    const { service, mailService } = build({
+      invoice: invoice({ isTaxInvoice: false }),
     });
 
     await service.settlementPaid(SETTLEMENT_ID);
 
-    // Sent, but as a statement — the document must not claim to be a tax
-    // invoice the seller could claim input credit against.
     expect(mailService.sendMail).toHaveBeenCalled();
-    const invoice = pdfService.render.mock.calls[0][0] as { isTaxInvoice: boolean };
-    expect(invoice.isTaxInvoice).toBe(false);
     const sent = (mailService.sendMail.mock.calls as SendMailOptions[][])[0][0];
     expect(sent.text).toContain('statement');
-  });
-
-  it('falls back to a bare document when the settings table cannot be read', async () => {
-    const { service, prisma, mailService } = build();
-    prisma.systemSetting.findMany.mockRejectedValue(new Error('db down'));
-
-    await expect(service.settlementPaid(SETTLEMENT_ID)).resolves.toBeUndefined();
-    expect(mailService.sendMail).toHaveBeenCalled();
   });
 });

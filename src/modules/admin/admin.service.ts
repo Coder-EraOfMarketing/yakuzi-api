@@ -50,6 +50,8 @@ import { SellersService } from '../sellers/sellers.service';
 import { UpdateSellerProfileDto } from '../sellers/dto/update-seller-profile.dto';
 import { MailService } from '../mail/mail.service';
 import { PayoutEmailService } from '../settlements/payout-email.service';
+import { CommissionInvoiceService } from '../settlements/commission-invoice.service';
+import { CommissionInvoicePdfService } from '../settlements/commission-invoice-pdf.service';
 import { ProductsService } from '../products/products.service';
 import { AdminCreateProductDto } from './dto/admin-create-product.dto';
 
@@ -100,6 +102,8 @@ export class AdminService {
     // Appended, never inserted: the specs construct this service positionally,
     // so changing the existing order would break them silently.
     private readonly payoutEmailService: PayoutEmailService,
+    private readonly commissionInvoiceService: CommissionInvoiceService,
+    private readonly commissionInvoicePdfService: CommissionInvoicePdfService,
   ) {}
 
   /**
@@ -2211,6 +2215,27 @@ export class AdminService {
     void this.payoutEmailService.settlementPaid(targetId);
 
     return updated;
+  }
+
+  /**
+   * The commission invoice for one settlement, as a PDF, for an admin to read
+   * BEFORE paying out — the whole point being to see the document before the
+   * seller does.
+   *
+   * Strictly read-only: it does not send, does not mark anything paid and does
+   * not touch the settlement's status. It goes through the same loader the
+   * payout email uses, so the preview is the document, not a lookalike.
+   */
+  async getCommissionInvoicePdf(
+    settlementId: string,
+  ): Promise<{ filename: string; pdf: Buffer }> {
+    const invoice = await this.commissionInvoiceService.forSettlement(settlementId);
+    if (!invoice) throw new NotFoundException('Settlement not found');
+
+    return {
+      filename: this.commissionInvoicePdfService.filename(invoice),
+      pdf: await this.commissionInvoicePdfService.render(invoice),
+    };
   }
 
   async syncSettlements() {

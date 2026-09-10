@@ -1,13 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../../database/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { redactEmail } from '../mail/redact-email';
-import {
-  buildCommissionInvoice,
-  type CommissionInvoice,
-  type IssuerDetails,
-} from './commission-invoice';
+import { type CommissionInvoice } from './commission-invoice';
 import { CommissionInvoicePdfService } from './commission-invoice-pdf.service';
+import { CommissionInvoiceService } from './commission-invoice.service';
 
 /**
  * Tells a seller their payout has gone out, and attaches the commission
@@ -21,23 +17,16 @@ import { CommissionInvoicePdfService } from './commission-invoice-pdf.service';
  * has moved; an email that will not send must never undo or block that.
  */
 
-/** Yukizi's own registered details, from platform settings. */
-const ISSUER_SETTING_KEYS = {
-  legalName: 'companyLegalName',
-  gstin: 'companyGstin',
-  address: 'companyAddress',
-  state: 'companyState',
-  email: 'companyEmail',
-} as const;
-
 @Injectable()
 export class PayoutEmailService {
   private readonly logger = new Logger(PayoutEmailService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
     private readonly mailService: MailService,
     private readonly pdfService: CommissionInvoicePdfService,
+    // The same loader the admin preview uses, so what an admin checked before
+    // paying is by construction the document that lands with the seller.
+    private readonly invoiceService: CommissionInvoiceService,
   ) {}
 
   /**
@@ -53,29 +42,21 @@ export class PayoutEmailService {
         return;
       }
 
-      const settlement = await this.prisma.sellerSettlement.findUnique({
-        where: { id: settlementId },
-        include: {
-          seller: true,
-          orderItem: { select: { orderId: true } },
-        },
-      });
-      if (!settlement) {
+      const invoice = await this.invoiceService.forSettlement(settlementId);
+      if (!invoice) {
         this.logger.warn(`payout-email skipped: settlement ${settlementId} not found`);
         return;
       }
 
-      const recipient = settlement.seller?.email?.trim();
+      const recipient = await this.invoiceService.recipientFor(settlementId);
       if (!recipient) {
         // A seller profile can exist without an email; there is genuinely
         // nowhere to send. Countable, so it can be measured.
         this.logger.warn(
-          `payout-email skipped: seller ${settlement.sellerId} has no email address`,
+          `payout-email skipped: settlement ${settlementId} has no seller email`,
         );
         return;
       }
-
-      const invoice = buildCommissionInvoice(settlement, await this.issuer());
 
       if (!invoice.isTaxInvoice) {
         // Still worth sending — the seller wants to know they were paid — but
@@ -116,28 +97,6 @@ export class PayoutEmailService {
       this.logger.error(
         `payout-email failed for settlement ${settlementId}: ${(error as Error)?.message}`,
       );
-    }
-  }
-
-  /** Platform settings; anything missing degrades the document, never fails it. */
-  private async issuer(): Promise<IssuerDetails> {
-    try {
-      const rows = await this.prisma.systemSetting.findMany({
-        where: { key: { in: Object.values(ISSUER_SETTING_KEYS) } },
-      });
-      const byKey = new Map(rows.map((r) => [r.key, r.value]));
-      return {
-        legalName: byKey.get(ISSUER_SETTING_KEYS.legalName),
-        gstin: byKey.get(ISSUER_SETTING_KEYS.gstin),
-        address: byKey.get(ISSUER_SETTING_KEYS.address),
-        state: byKey.get(ISSUER_SETTING_KEYS.state),
-        email: byKey.get(ISSUER_SETTING_KEYS.email),
-      };
-    } catch (error) {
-      this.logger.warn(
-        `payout-email could not read company details: ${(error as Error)?.message}`,
-      );
-      return {};
     }
   }
 

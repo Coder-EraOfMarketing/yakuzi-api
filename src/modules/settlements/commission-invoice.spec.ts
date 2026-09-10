@@ -123,24 +123,30 @@ describe('buildCommissionInvoice', () => {
     ).toBe(false);
   });
 
-  it('numbers by the payout date and the settlement, stably', () => {
+  it('numbers from when the settlement was raised, not when it was paid', () => {
     const invoice = buildCommissionInvoice(settlement(), issuer());
 
     expect(invoice.invoiceNumber).toBe('YKZ/COM/2026-27/15D8CB94');
-    // Same settlement, same number, however many times it is rendered.
-    expect(buildCommissionInvoice(settlement(), issuer()).invoiceNumber).toBe(
-      invoice.invoiceNumber,
-    );
+    expect(invoice.invoiceDate).toBe('2026-08-20T10:00:00.000Z');
   });
 
-  it('falls back to when the settlement was raised if it was never paid out', () => {
-    const invoice = buildCommissionInvoice(
-      settlement({ payoutDate: null }),
+  it('gives the same document before and after the payout', () => {
+    // An admin previews it while the settlement is still pending, then it is
+    // emailed once paid. Same settlement, same tax document — including when
+    // the payout lands in the next financial year, which numbering from the
+    // payout date would have silently changed.
+    const beforePayout = buildCommissionInvoice(
+      settlement({ payoutDate: null, payoutReference: null }),
+      issuer(),
+    );
+    const afterPayout = buildCommissionInvoice(
+      settlement({ payoutDate: new Date('2027-04-15T10:00:00Z') }),
       issuer(),
     );
 
-    expect(invoice.invoiceNumber).toBe('YKZ/COM/2026-27/15D8CB94');
-    expect(invoice.invoiceDate).toBe('2026-08-20T10:00:00.000Z');
+    expect(beforePayout.invoiceNumber).toBe(afterPayout.invoiceNumber);
+    expect(beforePayout.invoiceDate).toBe(afterPayout.invoiceDate);
+    expect(beforePayout.totalCharged).toBe(afterPayout.totalCharged);
   });
 
   it('carries the order reference and the payout reference for reconciliation', () => {

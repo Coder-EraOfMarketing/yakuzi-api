@@ -107,7 +107,16 @@ export function buildCommissionInvoice(
   settlement: SettlementForInvoice,
   issuer: IssuerDetails,
 ): CommissionInvoice {
-  const issuedOn = settlement.payoutDate ?? settlement.createdAt;
+  // Dated and numbered from when the settlement was raised — the delivery
+  // that earned the commission — NOT from the payout date.
+  //
+  // The payout date would move the document: an admin previewing it before
+  // paying would see one number, and if the payout crossed into a new
+  // financial year the seller would receive a different one for the same
+  // settlement. A tax document has to have one identity, and the preview has
+  // to be the thing that gets sent. The payout date is a payment event and
+  // travels separately, as the payout reference.
+  const issuedOn = settlement.createdAt;
 
   const grossAmount = round2(num(settlement.grossAmount));
   const commission = round2(num(settlement.commission));
