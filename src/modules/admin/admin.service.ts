@@ -161,6 +161,31 @@ export class AdminService {
     return { isTest: testPhones.includes(phone), classification: 'auto' };
   }
 
+  /**
+   * "Not a test order", as one filter every caller shares.
+   *
+   * The phone rule used to be written out at each call site, so the orders
+   * list and the dashboard could — and did — disagree about the same order:
+   * marking one real brought it into the list while Total Orders and Platform
+   * Revenue still ignored it. One definition, used everywhere, is what stops
+   * that happening again.
+   */
+  private async notTestOrderWhere(): Promise<Prisma.OrderWhereInput> {
+    const testPhones = this.getTestBuyerPhones();
+    const { real, test } = await this.getOrderOverrides();
+    return {
+      OR: [
+        ...(real.length ? [{ id: { in: real } }] : []),
+        {
+          AND: [
+            { buyer: { phone: { notIn: testPhones } } },
+            ...(test.length ? [{ id: { notIn: test } }] : []),
+          ],
+        },
+      ],
+    };
+  }
+
   private async cancellableTestOrdersWhere(): Promise<Prisma.OrderWhereInput> {
     const uncancelable: OrderStatus[] = [
       OrderStatus.SHIPPED,
@@ -262,6 +287,11 @@ export class AdminService {
         }
       }
 
+      // Read once and shared by every order figure below, so Total Orders,
+      // Platform Revenue, Pending Orders and Recent Orders can never disagree
+      // with each other — or with the orders list — about what counts.
+      const notTestOrder = await this.notTestOrderWhere();
+
       const safeQuery = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
         try {
           return await fn();
@@ -292,7 +322,7 @@ export class AdminService {
         safeQuery(
           () =>
             this.prisma.order.count({
-              where: { ...dateWhere, buyer: { phone: { notIn: this.getTestBuyerPhones() } } },
+              where: { ...dateWhere, AND: [notTestOrder] },
             }),
           0,
         ),
@@ -302,7 +332,7 @@ export class AdminService {
               where: {
                 paymentStatus: PaymentStatus.SUCCESS,
                 orderStatus: { notIn: [OrderStatus.CANCELLED, OrderStatus.RETURNED] },
-                buyer: { phone: { notIn: this.getTestBuyerPhones() } },
+                AND: [notTestOrder],
                 ...dateWhere,
               },
               _sum: { totalAmount: true },
@@ -314,7 +344,7 @@ export class AdminService {
             this.prisma.order.count({
               where: {
                 orderStatus: OrderStatus.PLACED,
-                buyer: { phone: { notIn: this.getTestBuyerPhones() } },
+                AND: [notTestOrder],
                 ...dateWhere,
               },
             }),
@@ -368,7 +398,7 @@ export class AdminService {
         safeQuery(
           () =>
             this.prisma.order.findMany({
-              where: { ...dateWhere, buyer: { phone: { notIn: this.getTestBuyerPhones() } } },
+              where: { ...dateWhere, AND: [notTestOrder] },
               take: 5,
               orderBy: { createdAt: 'desc' },
               select: {
@@ -1284,17 +1314,7 @@ export class AdminService {
       // Hidden when the phone rule OR an explicit test override says test —
       // unless the order is explicitly marked real, which beats both.
       // Composed into AND so it cannot collide with the search filter's OR.
-      const notTest: Prisma.OrderWhereInput = {
-        OR: [
-          ...(overrides.real.length ? [{ id: { in: overrides.real } }] : []),
-          {
-            AND: [
-              { buyer: { phone: { notIn: testPhones } } },
-              ...(overrides.test.length ? [{ id: { notIn: overrides.test } }] : []),
-            ],
-          },
-        ],
-      };
+      const notTest = await this.notTestOrderWhere();
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
         notTest,
