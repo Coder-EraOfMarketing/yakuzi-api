@@ -10,6 +10,7 @@ import {
   validFaqEntries,
 } from './seo-scoring';
 import { ListSeoMetaQueryDto, UpsertSeoMetaDto } from './seo.dto';
+import { StorefrontRevalidationService } from './storefront-revalidation.service';
 
 /**
  * Drops FAQ rows that carry no question or answer.
@@ -46,7 +47,10 @@ const EDITABLE_FIELDS = [
 
 @Injectable()
 export class SeoService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly revalidation: StorefrontRevalidationService,
+  ) {}
 
   // ─── Product URL slug (catalog-id keyed, same keyspace as PRODUCT SeoMeta) ──
   // The SEO tab's "Canonical URL" field only sets a meta tag; these let the
@@ -113,6 +117,9 @@ export class SeoService {
           data: { ...fields, ...scores, updatedById: userId ?? null },
         }),
       ]);
+      // Not awaited: the storefront's cache is not the admin's problem, and a
+      // slow or unreachable buyer app must not delay or fail this save.
+      void this.revalidation.seoMetaChanged(entityType, entityId);
       return withCleanFaq(updated);
     }
 
@@ -125,6 +132,7 @@ export class SeoService {
         updatedById: userId ?? null,
       } as Prisma.SeoMetaUncheckedCreateInput,
     });
+    void this.revalidation.seoMetaChanged(entityType, entityId);
     return withCleanFaq(created);
   }
 
@@ -211,6 +219,8 @@ export class SeoService {
         data: { ...fields, ...scores, updatedById: userId ?? null },
       }),
     ]);
+    // A restore changes what the page shows just as much as a save does.
+    void this.revalidation.seoMetaChanged(meta.entityType, meta.entityId);
     return withCleanFaq(updated);
   }
 

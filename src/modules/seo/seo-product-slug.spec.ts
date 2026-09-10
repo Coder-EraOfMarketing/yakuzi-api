@@ -15,7 +15,7 @@ const build = () => {
     },
     $transaction: jest.fn((fn: any) => fn(prisma)),
   };
-  const service = new SeoService(prisma);
+  const service = new SeoService(prisma, { seoMetaChanged: jest.fn() } as never);
   return { service, prisma };
 };
 

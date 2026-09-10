@@ -8,6 +8,7 @@ import { SeoService } from './seo.service';
 import { SeoRedirectsService } from './seo-redirects.service';
 import { SeoKeywordsService } from './seo-keywords.service';
 import { SeoNotFoundService } from './seo-not-found.service';
+import { StorefrontRevalidationService } from './storefront-revalidation.service';
 
 @Module({
   imports: [DatabaseModule, StorageModule],
@@ -18,6 +19,7 @@ import { SeoNotFoundService } from './seo-not-found.service';
     SeoKeywordsService,
     SeoNotFoundService,
     ImageRenameService,
+    StorefrontRevalidationService,
   ],
   exports: [SeoService],
 })
