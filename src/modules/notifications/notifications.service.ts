@@ -93,6 +93,20 @@ export class NotificationsService {
   }
 
   /**
+   * Notify a buyer that their order was cancelled, and why.
+   *
+   * The reason is the whole point: an order that changes state under someone
+   * with no explanation becomes a support ticket.
+   */
+  async notifyOrderCancelled(buyerId: string, orderId: string, reason?: string) {
+    const why = reason?.trim() ? ` Reason: ${reason.trim()}` : '';
+    return this.createNotification(
+      buyerId,
+      `Your order ${orderId.slice(0, 8)}… has been cancelled.${why}`,
+    );
+  }
+
+  /**
    * Notify seller when they receive a new order.
    */
   async notifySellerNewOrder(sellerUserId: string, orderId: string) {

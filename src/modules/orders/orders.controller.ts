@@ -39,6 +39,7 @@ import { InvoicePdfService } from './invoice-pdf.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { UpdateShippingDetailsDto } from './dto/update-shipping-details.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth('JWT-auth')
@@ -253,8 +254,14 @@ export class OrdersController {
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: string,
     @Param('id', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelOrderDto,
   ) {
-    const data = await this.ordersService.cancelOrder(userId, orderId, role);
+    const data = await this.ordersService.cancelOrder(
+      userId,
+      orderId,
+      role,
+      dto?.reason,
+    );
     return { message: 'Order cancelled successfully', data };
   }
 
