@@ -315,12 +315,50 @@ export class OrdersService {
       );
     }
 
+    // The courier link, if there is one by now — pasted by a self-ship seller
+    // or synced from Shiprocket. Read here rather than passed in: every caller
+    // writes it moments before calling this, and threading it through all of
+    // them would be four chances to forget one. Never fatal — if the read
+    // fails the buyer still gets the mail, just without the link, exactly as
+    // before.
+    const shipment =
+      status === OrderStatus.DELIVERED ? null : await this.shipmentLinkFor(order.id);
+    const trackingUrl = shipment?.trackingUrl?.trim() || null;
+    const courierName = shipment?.courierName?.trim() || null;
+
     if (order.buyer.email) {
+      const detail: string[] = [];
+      if (courierName) detail.push(`Courier: ${courierName}`);
+      if (trackingUrl) detail.push(`Track your parcel: ${trackingUrl}`);
+
+      const closing = detail.length
+        ? 'You can also track it from the Orders section of your Yukizi account.'
+        : 'You can track it anytime from the Orders section of your Yukizi account.';
+
+      // courierName is free text the seller typed, and trackingUrl can come
+      // from Shiprocket — both are escaped before they reach the markup.
+      const htmlDetail =
+        (courierName
+          ? `<p style="margin:0 0 4px">Courier: <strong>${this.escape(courierName)}</strong></p>`
+          : '') +
+        (trackingUrl
+          ? `<p style="margin:0 0 12px"><a href="${this.escape(trackingUrl)}">Track your parcel</a></p>`
+          : '');
+
       const result = await this.mailService.sendMail({
         to: order.buyer.email,
         subject: `Your Yukizi order #${shortId} is ${update.label}`,
-        text: `Hi,\n\nYour order #${shortId} is now ${update.label}.\n\nYou can track it anytime from the Orders section of your Yukizi account.\n\n— Team Yukizi`,
-        html: `<p>Hi,</p><p>Your order <strong>#${shortId}</strong> is now <strong>${update.label}</strong>.</p><p>You can track it anytime from the Orders section of your Yukizi account.</p><p>— Team Yukizi</p>`,
+        text: [
+          'Hi,',
+          '',
+          `Your order #${shortId} is now ${update.label}.`,
+          ...(detail.length ? ['', ...detail] : []),
+          '',
+          closing,
+          '',
+          '— Team Yukizi',
+        ].join('\n'),
+        html: `<p>Hi,</p><p>Your order <strong>#${shortId}</strong> is now <strong>${update.label}</strong>.</p>${htmlDetail}<p>${closing}</p><p>— Team Yukizi</p>`,
       });
       if (!result.sent) {
         this.logger.warn(
@@ -330,6 +368,11 @@ export class OrdersService {
     }
 
     if (order.buyer.phone) {
+      // Deliberately unchanged, and no tracking link here. Transactional SMS
+      // goes out against a DLT-approved template (see
+      // OtpSmsService.sendTransactional); editing the wording — or adding a
+      // URL — risks the operator rejecting every message. The link lives in
+      // the email.
       const result = await this.otpSmsService.sendTransactional(
         order.buyer.phone,
         `Your Yukizi order #${shortId} is now ${update.label}. Track it in the Yukizi app.`,
@@ -1901,6 +1944,28 @@ export class OrdersService {
    * Escapes text for safe interpolation into an HTML email body. Same
    * approach as InvoiceEmailService.escape() / SellerOrderNotifierService.escape().
    */
+  /**
+   * The order's courier link and courier name, for the buyer's status email.
+   *
+   * Returns null rather than throwing: a notification is a courtesy, and a
+   * database hiccup here must not stop the buyer being told their order moved.
+   */
+  private async shipmentLinkFor(
+    orderId: string,
+  ): Promise<{ trackingUrl: string | null; courierName: string | null } | null> {
+    try {
+      return await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { trackingUrl: true, courierName: true },
+      });
+    } catch (error: any) {
+      this.logger.warn(
+        `Could not read tracking details for order ${orderId}: ${error?.message}`,
+      );
+      return null;
+    }
+  }
+
   private escape(value: string): string {
     return String(value ?? '')
       .replace(/&/g, '&amp;')
