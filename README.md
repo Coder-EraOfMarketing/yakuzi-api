@@ -85,6 +85,8 @@ Because the production RDS database is in a private subnet with no public intern
 | `AWS_BUCKET`               | No       | `yukizi-images`          | S3 bucket name                  |
 | `CORS_ORIGINS`             | No       | `http://localhost:3000,...` | Comma-separated allowed origins |
 | `PLATFORM_COMMISSION_RATE` | No       | `5`                         | Commission % on orders          |
+| `STOREFRONT_URL`           | No       | `https://yukizi.com`        | Buyer app to ping on SEO saves  |
+| `STOREFRONT_REVALIDATE_SECRET` | No   | —                           | Shared with the buyer app's env of the same name. Set both and an admin's SEO edit appears at once; unset, the storefront just refreshes on its 5-minute timer |
 
 ## API Documentation
 

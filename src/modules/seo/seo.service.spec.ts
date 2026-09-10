@@ -18,7 +18,8 @@ describe('SeoService', () => {
     },
     $transaction: jest.fn(),
   };
-  const service = new SeoService(prisma as never);
+  const revalidation = { seoMetaChanged: jest.fn() };
+  const service = new SeoService(prisma as never, revalidation as never);
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -48,6 +49,24 @@ describe('SeoService', () => {
       expect(created.seoScore).toBeGreaterThan(0);
       expect(created.updatedById).toBe('admin-1');
       expect(prisma.seoMetaRevision.create).not.toHaveBeenCalled();
+    });
+
+    it('tells the storefront to drop its cache, so the edit is not stuck behind two 5-minute timers', async () => {
+      prisma.seoMeta.findUnique.mockResolvedValue(null);
+      prisma.seoMeta.create.mockImplementation(({ data }: { data: unknown }) =>
+        Promise.resolve(data),
+      );
+
+      await service.upsertMeta({
+        entityType: SeoEntityType.PRODUCT,
+        entityId: 'prod-1',
+        title: 'Goku Figure Deluxe Edition',
+      });
+
+      expect(revalidation.seoMetaChanged).toHaveBeenCalledWith(
+        SeoEntityType.PRODUCT,
+        'prod-1',
+      );
     });
 
     it('writes a revision snapshot of the previous state before updating', async () => {
