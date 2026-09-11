@@ -9,10 +9,16 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import Razorpay from 'razorpay';
-import { PaymentMethod, PaymentStatus, PaymentVerificationStatus } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+  PaymentVerificationStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PaymentsService } from './payments.service';
 import { VerifyRazorpayDto } from './dto/verify-razorpay.dto';
+import { checkoutGroupWhere } from './checkout-group';
 
 /**
  * Razorpay checkout.
@@ -71,11 +77,17 @@ export class RazorpayService {
   }
 
   /**
-   * Creates the Razorpay order for one of our orders and records a pending
-   * payment against it.
+   * Creates the Razorpay order for a checkout and records a pending payment
+   * against it.
    *
-   * The amount comes from the order in our database, never from the client - a
-   * caller-supplied amount would let a buyer pay one rupee for a large order.
+   * The amount covers the WHOLE basket, not just the order whose id the browser
+   * happened to send. A cart with items from three sellers becomes three orders
+   * (see OrdersService.createOrder), and the buyer is quoted one total on the
+   * checkout page — so charging one order's subtotal undercharged them and left
+   * the other sellers' orders unpaid until the abandonment sweep cancelled them.
+   *
+   * The amount comes from those orders in our database, never from the client -
+   * a caller-supplied amount would let a buyer pay one rupee for a large order.
    */
   async createOrder(userId: string, orderId: string) {
     const order = await this.prisma.order.findUnique({
@@ -83,6 +95,8 @@ export class RazorpayService {
       select: {
         id: true,
         buyerId: true,
+        createdAt: true,
+        checkoutGroupId: true,
         totalAmount: true,
         paymentStatus: true,
       },
@@ -94,11 +108,30 @@ export class RazorpayService {
     if (order.buyerId !== userId) {
       throw new ForbiddenException('This order belongs to another account');
     }
-    if (order.paymentStatus === PaymentStatus.SUCCESS) {
+
+    // Everything still owed from this checkout. A sibling that is already paid
+    // or has since been cancelled is left out, so a retry after a partial
+    // payment asks for the remainder and never for a cancelled order.
+    const unpaid = await this.prisma.order.findMany({
+      where: {
+        ...checkoutGroupWhere(order),
+        buyerId: userId,
+        paymentStatus: { not: PaymentStatus.SUCCESS },
+        orderStatus: { not: OrderStatus.CANCELLED },
+      },
+      select: { id: true, totalAmount: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!unpaid.length) {
       throw new BadRequestException('This order has already been paid');
     }
 
-    const amountInPaise = Math.round(Number(order.totalAmount) * 100);
+    const groupTotal = unpaid.reduce(
+      (sum, o) => sum + Number(o.totalAmount),
+      0,
+    );
+    const amountInPaise = Math.round(groupTotal * 100);
     if (!Number.isFinite(amountInPaise) || amountInPaise <= 0) {
       throw new BadRequestException('This order has no amount to pay');
     }
@@ -111,7 +144,9 @@ export class RazorpayService {
         // Our own id travels with the Razorpay order, so a payment can still be
         // traced back from their dashboard.
         receipt: order.id,
-        notes: { orderId: order.id },
+        // Every order this payment covers, so a multi-seller basket can be
+        // reconciled from the Razorpay dashboard without a database lookup.
+        notes: { orderId: order.id, orderIds: unpaid.map((o) => o.id).join(',') },
       })) as { id: string };
     } catch (err) {
       this.logger.error(
@@ -126,14 +161,19 @@ export class RazorpayService {
 
     // Recorded before the buyer pays, so a payment that completes always has a
     // row waiting for it even if they close the tab immediately afterwards.
+    //
+    // The row is attached to the order the browser asked about and carries the
+    // WHOLE basket's amount. That is the same shape a cash-on-delivery payment
+    // already has, and it is what lets confirmPayment() mark every order in the
+    // group paid — and what the webhook's amount check compares against.
     await this.prisma.payment.create({
       data: {
         orderId: order.id,
-        amount: order.totalAmount,
-        // There is no ONLINE method in the PaymentMethod enum and the deploy
-        // does not run migrations, so adding one would need a manual step on
-        // the server. UPI is the closest existing value; the Razorpay ids in
-        // referenceNumber are what actually identify the payment.
+        amount: groupTotal,
+        // There is no ONLINE method in the PaymentMethod enum, so adding one
+        // would mean an enum migration on a live table. UPI is the closest
+        // existing value; the Razorpay ids in referenceNumber are what
+        // actually identify the payment.
         method: PaymentMethod.UPI,
         referenceNumber: razorpayOrder.id,
         verificationStatus: PaymentVerificationStatus.PENDING,

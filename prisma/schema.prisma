@@ -424,6 +424,13 @@ model Order {
   cancellationReason String?
   cancelledAt        DateTime?
 
+  // One id shared by every order a single checkout produced. A cart holding
+  // items from three sellers becomes three orders, and the buyer still pays
+  // once for all of them — this is what ties them back together when the money
+  // is taken and confirmed. Null on orders placed before this column existed;
+  // those fall back to "same buyer, same few seconds" (see checkout-group.ts).
+  checkoutGroupId String?
+
   // Shipping Lock
   isShippingLocked Boolean @default(false)
 
@@ -432,6 +439,7 @@ model Order {
   @@index([paymentStatus])
   @@index([createdAt])
   @@index([sellersNotifiedAt])
+  @@index([checkoutGroupId])
   @@map("orders")
 }
 
