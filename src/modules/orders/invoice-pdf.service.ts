@@ -16,8 +16,9 @@ import type { Invoice, InvoiceParty } from './invoice.service';
  * the web page. Pasting the symbol back in renders a broken character.
  *
  * Blank fields print as an em dash, exactly as the web invoice does, so the
- * document degrades identically while seller GSTINs and Yukizi's own registered
- * details are still being collected.
+ * document degrades identically while seller GSTINs are still being collected.
+ * Yukizi's own registered details do not appear at all: this invoice is the
+ * seller's to the buyer, and Yukizi is not a party to that sale.
  */
 
 const PURPLE = '#593696';
@@ -370,22 +371,31 @@ export class InvoicePdfService {
     }
 
     // ── Footer ───────────────────────────────────────────────
-    // Yukizi's own registered details are intentionally blank until the legal
-    // name, GSTIN, CIN and address are supplied. Placeholder values on a tax
-    // document are worse than empty ones.
+    // This document is the seller's invoice to the buyer; Yukizi is the
+    // marketplace they met on, not a party to the sale. So no Yukizi GSTIN or
+    // CIN line here — the supplier's own registered details are printed with
+    // the seller above, and empty labels for a company that is not selling
+    // anything only made the invoice look unfinished.
     const footerTop = doc.page.height - 110;
     doc.rect(left, footerTop, width, 50).fill(PURPLE);
     doc
       .font('Helvetica')
       .fontSize(7.5)
       .fillColor('#ffffff')
-      .text('GSTIN:', left + 10, footerTop + 8)
-      .text('Address:', left + 10, footerTop + 19)
-      .text('CIN:', left + 10, footerTop + 30)
       .text(
-        'Email: support@yukizi.com   |   Website:',
+        'Sold to you by the seller named above, whose registered details and',
         left + 10,
-        footerTop + 41,
+        footerTop + 10,
+      )
+      .text(
+        'GSTIN appear with their address. Yukizi operates the marketplace.',
+        left + 10,
+        footerTop + 21,
+      )
+      .text(
+        'Questions about this order: support@yukizi.com   |   yukizi.com',
+        left + 10,
+        footerTop + 34,
       );
 
     doc
