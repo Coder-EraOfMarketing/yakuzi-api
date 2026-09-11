@@ -209,7 +209,19 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
     message: string,
     history: Array<{ role: string; content?: string; attachments?: any[] }>,
     attachments?: any[],
-    options?: { thinkingEnabled?: boolean; thinkingBudget?: number },
+    options?: {
+      thinkingEnabled?: boolean;
+      thinkingBudget?: number;
+      /**
+       * Compiled by the Studio (persona-compiler.ts). When present the sidecar
+       * uses it verbatim instead of assembling its own prompt, so everything an
+       * admin configured — voice, boundaries, taught rules — is decided in one
+       * place and is testable in TypeScript.
+       */
+      systemInstruction?: string;
+      /** Exactly the tools the admin left switched on. */
+      tools?: string[];
+    },
   ): Promise<{ response: string; thoughts?: string; thinkingTimeMs?: number }> {
     const geminiApiKey = this.configService.get<string>('GEMINI_API_KEY') || '';
 
@@ -227,6 +239,10 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
         attachments,
         thinking_enabled: options?.thinkingEnabled ?? true,
         thinking_budget: options?.thinkingBudget ?? 2048,
+        // Omitted only by callers that predate the Studio; the sidecar then
+        // falls back to building the prompt itself, exactly as before.
+        system_instruction: options?.systemInstruction,
+        tools: options?.tools,
       });
       
       const data = response.data;

@@ -92,6 +92,14 @@ class ChatRequest(BaseModel):
     attachments: Optional[List[Attachment]] = []
     thinking_enabled: Optional[bool] = True
     thinking_budget: Optional[int] = 2048
+    # Compiled by the Chatbot Studio in the API. When present it replaces
+    # everything build_system_instruction() would have assembled here, so the
+    # persona, the boundaries and the taught rules all come from one place.
+    # Absent (an older caller, or a direct curl) keeps the previous behaviour.
+    system_instruction: Optional[str] = None
+    # Exactly the tools the admin left switched on. None means "all of them",
+    # which is what every caller before the Studio expected.
+    tools: Optional[List[str]] = None
 
 class ConversationTrainRequest(BaseModel):
     history: List[ChatMessage]
@@ -276,6 +284,30 @@ def get_active_rules() -> list:
         conn.close()
 
 
+#: Every tool the assistant could ever be given, by the name the Studio uses.
+ALL_TOOLS = {
+    "search_products": search_products,
+    "get_order_status": get_order_status,
+    "search_blogs": search_blogs,
+    "get_product_reviews": get_product_reviews,
+}
+
+
+def resolve_tools(names):
+    """The tools this conversation is allowed to use.
+
+    None means the caller predates the Studio's access switches, so it gets
+    everything — that was the behaviour before, and silently taking tools away
+    from an old caller would look like the assistant had gone stupid.
+
+    An explicit empty list is a real choice: the admin switched everything off,
+    and the assistant must answer from what it was taught alone.
+    """
+    if names is None:
+        return list(ALL_TOOLS.values())
+    return [ALL_TOOLS[n] for n in names if n in ALL_TOOLS]
+
+
 def build_system_instruction() -> str:
     """Base persona (never modified by training) plus a bounded, structured
     list of admin-taught rules — replaces the old model of appending raw
@@ -398,8 +430,8 @@ async def chat(request: ChatRequest):
                 print(f"ThinkingConfig setup notice: {te}", file=sys.stderr)
 
         config = types.GenerateContentConfig(
-            system_instruction=build_system_instruction(),
-            tools=[search_products, get_order_status, search_blogs, get_product_reviews],
+            system_instruction=request.system_instruction or build_system_instruction(),
+            tools=resolve_tools(request.tools),
             thinking_config=thinking_config
         )
         
