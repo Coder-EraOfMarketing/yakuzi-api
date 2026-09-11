@@ -1034,6 +1034,112 @@ model ChatbotRule {
   @@map("chatbot_rules")
 }
 
+/// Everything an admin can decide about the assistant, in one row.
+///
+/// Deliberately flat columns rather than a JSON blob: the Python sidecar reads
+/// this table directly with plain SQL, and an admin changing one switch should
+/// not need anyone to parse a document to find out what changed.
+///
+/// There is exactly one row, id "singleton". The service upserts it, so a fresh
+/// database and an upgraded one behave identically.
+model ChatbotConfig {
+  id String @id @default("singleton")
+
+  // ── Who the assistant is ────────────────────────────────────────────────
+  assistantName String  @default("Yukizi Assistant")
+  greeting      String  @default("Hi! I'm here to help with anything about Yukizi — products, orders, or anything else you're wondering.")
+  /// Shown under the name in the chat header. Empty hides it.
+  tagline       String  @default("")
+
+  // ── Voice: 0-100 dials that compile into plain instructions ─────────────
+  /// 0 = chats like a friend, 100 = formal and businesslike
+  formality  Int @default(40)
+  /// 0 = strictly factual, 100 = openly warm and encouraging
+  warmth     Int @default(70)
+  /// 0 = one or two lines, 100 = thorough explanations
+  detail     Int @default(45)
+  /// 0 = never uses emoji, 100 = uses them freely
+  emoji      Int @default(15)
+  /// 0 = never suggests anything to buy, 100 = actively recommends
+  salesiness Int @default(35)
+
+  /// Languages it may reply in. It always answers in the language it was asked.
+  languages String[] @default(["English", "Hindi"])
+
+  /// Phrases, claims or promises it must never make. One per entry.
+  neverSay String[] @default([])
+  /// Things it should always do or mention when relevant.
+  alwaysDo String[] @default([])
+  /// Subjects it must refuse and redirect to support.
+  blockedTopics String[] @default([])
+
+  // ── What it is allowed to reach ─────────────────────────────────────────
+  /// Search the catalogue: names, prices, stock, manufacturers.
+  canSearchProducts Boolean @default(true)
+  /// Quote real customer reviews and ratings.
+  canReadReviews    Boolean @default(true)
+  /// Cite blog articles and link to them.
+  canReadBlogs      Boolean @default(true)
+  /// Look up an order's status by its id.
+  canCheckOrders    Boolean @default(true)
+  /// Answer questions that have nothing to do with the store.
+  canAnswerOffTopic Boolean @default(true)
+  /// Quote prices out loud. Off = it describes products but sends people to
+  /// the product page for the price.
+  canQuotePrices    Boolean @default(true)
+
+  // ── Limits ──────────────────────────────────────────────────────────────
+  /// Messages one visitor may send per day. 0 = unlimited.
+  maxMessagesPerVisitorPerDay Int @default(40)
+  /// Messages the whole site may send per day — the spend ceiling. 0 = unlimited.
+  maxMessagesPerDay           Int @default(3000)
+  /// Longest single message a visitor may send, in characters.
+  maxMessageLength            Int @default(2000)
+  /// How many past turns are replayed to the model. Caps cost per message.
+  maxHistoryTurns             Int @default(12)
+  /// Upper bound on the model's thinking budget, whatever the caller asks for.
+  thinkingBudgetCap           Int @default(2048)
+  thinkingEnabled             Boolean @default(true)
+
+  /// Shown when a visitor hits their own limit.
+  limitReachedMessage String @default("You've reached today's chat limit. Please email support@yukizi.com and we'll pick this up with you.")
+  /// Shown when the whole site hits its daily ceiling, or the assistant is off.
+  unavailableMessage  String @default("Our assistant is taking a short break. Please email support@yukizi.com and a human will help you.")
+
+  /// Master switch. Off = the widget answers with unavailableMessage and no
+  /// model call is ever made.
+  isEnabled Boolean @default(true)
+
+  /// Free-text appended last, for anything the dials cannot express.
+  extraInstructions String @default("")
+
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("chatbot_config")
+}
+
+/// One row per visitor per day — how the daily limits are counted.
+///
+/// The global ceiling is the same table with visitorKey "__all__", so one
+/// query shape answers both questions and both are incremented in the same
+/// transaction.
+model ChatbotUsageDay {
+  id         String   @id @default(uuid())
+  /// YYYY-MM-DD in Asia/Kolkata, so "today" means today for the people running
+  /// the store rather than for UTC.
+  day        String
+  /// The X-Visitor-Id the storefront sends, or a hash of the caller's IP when
+  /// it does not. Never a name, email or phone number.
+  visitorKey String
+  count      Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([day, visitorKey])
+  @@index([day])
+  @@map("chatbot_usage_days")
+}
+
 enum MarketingSlot {
   HOMEPAGE_CAROUSEL
   LOGIN_CAROUSEL
