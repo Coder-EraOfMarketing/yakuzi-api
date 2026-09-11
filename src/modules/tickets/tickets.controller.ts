@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Get,
   Body,
   Param,
@@ -57,6 +58,21 @@ export class TicketsController {
     @Param('id', ParseUUIDPipe) ticketId: string,
   ) {
     return this.ticketsService.getTicketById(userId, role, ticketId);
+  }
+
+  @Patch(':id/close')
+  @ApiOperation({
+    summary: 'Close a ticket — the buyer who raised it, or support',
+  })
+  @ApiResponse({ status: 200, description: 'Ticket closed' })
+  @ApiResponse({ status: 403, description: 'Ticket belongs to another account' })
+  @ApiResponse({ status: 404, description: 'Ticket not found' })
+  closeTicket(
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: any,
+    @Param('id', ParseUUIDPipe) ticketId: string,
+  ) {
+    return this.ticketsService.closeTicket(userId, role, ticketId);
   }
 
   @Post(':id/messages')
