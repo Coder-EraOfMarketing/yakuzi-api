@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -664,6 +665,11 @@ export class OrdersService {
     // that never reaches Shopify/WooCommerce/Amazon is how a seller oversells
     // the same unit twice.
     const stockChangedOffers: { sellerId: string; sellerOfferId: string }[] = [];
+    // Every order this checkout produces carries the same group id. The buyer
+    // pays once for the basket, so this is what tells the payment code which
+    // orders that one payment has to cover — without it, a three-seller cart
+    // was charged for whichever order came out of the loop first.
+    const checkoutGroupId = randomUUID();
     const order = await this.prisma.$transaction(async (tx) => {
       const createdOrders: any[] = [];
 
@@ -678,6 +684,7 @@ export class OrdersService {
           data: {
             buyerId: userId,
             totalAmount: sellerTotalAmount,
+            checkoutGroupId,
             orderStatus: OrderStatus.PLACED,
             // Snapshot the seller's fulfillment preference at this moment -
             // toggling selfShipEnabled later must not change existing orders.

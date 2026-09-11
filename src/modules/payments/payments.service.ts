@@ -17,6 +17,7 @@ import { calculateSellerPayout } from '../settlements/payout-calculator';
 import { InvoiceEmailService } from '../orders/invoice-email.service';
 import { SellerOrderNotifierService } from '../orders/seller-order-notifier.service';
 import { WebAnalyticsService } from '../web-analytics/web-analytics.service';
+import { checkoutGroupWhere } from './checkout-group';
 
 @Injectable()
 export class PaymentsService {
@@ -55,16 +56,11 @@ export class PaymentsService {
       throw new NotFoundException('Order not found');
     }
 
-    // 2. Find all orders created by this buyer in the same checkout session (within 5 seconds)
-    const orderTime = order.createdAt.getTime();
+    // 2. Every order this buyer's checkout produced — one per seller — since a
+    // single payment settles the whole basket. Orders placed before the group
+    // id existed still fall back to the old "within five seconds" rule.
     const relatedOrders = await this.prisma.order.findMany({
-      where: {
-        buyerId: userId,
-        createdAt: {
-          gte: new Date(orderTime - 5000),
-          lte: new Date(orderTime + 5000),
-        },
-      },
+      where: { ...checkoutGroupWhere(order), buyerId: userId },
     });
 
     // Check if order is already fully paid
@@ -256,15 +252,13 @@ export class PaymentsService {
       throw new BadRequestException('Cannot confirm a rejected payment');
     }
 
-    // Find all related orders created within 5 seconds of the primary order
-    const orderTime = payment.order.createdAt.getTime();
+    // Every order the same checkout produced — this payment covers the basket,
+    // not just the order it is attached to. Pre-group-id orders keep the old
+    // "same buyer, within five seconds" behaviour.
     const relatedOrders = await this.prisma.order.findMany({
       where: {
+        ...checkoutGroupWhere(payment.order),
         buyerId: payment.order.buyerId,
-        createdAt: {
-          gte: new Date(orderTime - 5000),
-          lte: new Date(orderTime + 5000),
-        },
       },
       include: {
         items: {
