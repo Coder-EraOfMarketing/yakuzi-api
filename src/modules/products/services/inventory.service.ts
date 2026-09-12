@@ -4,35 +4,34 @@ import { PrismaService } from '../../../database/prisma.service';
 
 /**
  * Internal inventory management service.
- * Handles batch-level stock, expiry intelligence, and inventory alerts.
+ * Handles batch-level stock and low-stock alerts.
  * NOT exposed as public API — called internally by ProductsService.
+ *
+ * Batches are how stock is physically stored, inherited from the pharmaceutical
+ * marketplace this codebase was forked from. What has been removed is the
+ * EXPIRY half of that model: a collectable does not expire, so nothing here
+ * asks for a date, invents one, sorts by one, or raises an alert about one.
+ * `ProductBatch.expiryDate` is nullable and simply stays null on everything
+ * created from now on.
  */
 @Injectable()
 export class InventoryService {
   private readonly logger = new Logger(InventoryService.name);
 
-  /** Near-expiry threshold: 90 days */
-  private readonly NEAR_EXPIRY_DAYS = 90;
   /** Low-stock threshold */
   private readonly LOW_STOCK_THRESHOLD = 10;
 
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Create a default batch when a product is created (Phase-1 compatibility).
-   * Phase-2+ will allow multiple batches per product.
+   * Create the batch a product's stock lives in.
    */
-  async createDefaultBatch(
-    sellerOfferId: string,
-    stock: number,
-    expiryDate: string,
-  ) {
+  async createDefaultBatch(sellerOfferId: string, stock: number) {
     const batch = await this.prisma.productBatch.create({
       data: {
         sellerOfferId,
         batchNumber: 'DEFAULT',
         stock,
-        expiryDate: new Date(expiryDate),
       },
     });
 
@@ -41,19 +40,15 @@ export class InventoryService {
     );
 
     // Fire-and-forget: check alerts for the new batch
-    this.checkBatchAlerts(sellerOfferId, batch.id, stock, new Date(expiryDate));
+    this.checkBatchAlerts(sellerOfferId, batch.id, stock);
 
     return batch;
   }
 
   /**
-   * Update the default batch stock/expiry (Phase-1 compatibility).
+   * Set a product's stock.
    */
-  async updateDefaultBatch(
-    sellerOfferId: string,
-    stock?: number,
-    expiryDate?: string,
-  ) {
+  async updateDefaultBatch(sellerOfferId: string, stock?: number) {
     const existing = await this.prisma.productBatch.findFirst({
       where: { sellerOfferId, batchNumber: 'DEFAULT' },
     });
@@ -62,20 +57,14 @@ export class InventoryService {
       this.logger.warn(
         `No default batch found for product ${sellerOfferId}, creating one`,
       );
-      return this.createDefaultBatch(
-        sellerOfferId,
-        stock ?? 0,
-        expiryDate ?? new Date(Date.now() + 365 * 86400000).toISOString(),
-      );
+      return this.createDefaultBatch(sellerOfferId, stock ?? 0);
     }
 
-    const updateData: Record<string, unknown> = {};
-    if (stock !== undefined) updateData.stock = stock;
-    if (expiryDate !== undefined) updateData.expiryDate = new Date(expiryDate);
+    if (stock === undefined) return existing;
 
     const batch = await this.prisma.productBatch.update({
       where: { id: existing.id },
-      data: updateData,
+      data: { stock },
     });
 
     this.logger.debug(
@@ -83,12 +72,7 @@ export class InventoryService {
     );
 
     // Fire-and-forget: re-check alerts
-    this.checkBatchAlerts(
-      sellerOfferId,
-      batch.id,
-      batch.stock,
-      batch.expiryDate,
-    );
+    this.checkBatchAlerts(sellerOfferId, batch.id, batch.stock);
 
     return batch;
   }
@@ -105,18 +89,6 @@ export class InventoryService {
   }
 
   /**
-   * Get the nearest expiry date across all batches.
-   */
-  async getNearestExpiry(sellerOfferId: string): Promise<Date | null> {
-    const batch = await this.prisma.productBatch.findFirst({
-      where: { sellerOfferId, stock: { gt: 0 } },
-      orderBy: { expiryDate: 'asc' },
-      select: { expiryDate: true },
-    });
-    return batch?.expiryDate ?? null;
-  }
-
-  /**
    * Check batch and generate inventory alerts if thresholds are breached.
    * Runs asynchronously — failures are logged but don't propagate.
    */
@@ -124,7 +96,6 @@ export class InventoryService {
     sellerOfferId: string,
     batchId: string,
     stock: number,
-    expiryDate: Date,
   ) {
     try {
       const alerts: { alertType: AlertType; message: string }[] = [];
@@ -139,22 +110,6 @@ export class InventoryService {
         alerts.push({
           alertType: AlertType.OUT_OF_STOCK,
           message: `Low stock: only ${stock} units remaining`,
-        });
-      }
-
-      // Near-expiry check
-      const daysUntilExpiry = Math.floor(
-        (expiryDate.getTime() - Date.now()) / 86400000,
-      );
-      if (daysUntilExpiry <= 0) {
-        alerts.push({
-          alertType: AlertType.NEAR_EXPIRY,
-          message: 'Batch has expired',
-        });
-      } else if (daysUntilExpiry <= this.NEAR_EXPIRY_DAYS) {
-        alerts.push({
-          alertType: AlertType.NEAR_EXPIRY,
-          message: `Batch expires in ${daysUntilExpiry} days`,
         });
       }
 

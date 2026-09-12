@@ -594,11 +594,17 @@ model OrderAddress {
   @@map("order_addresses")
 }
 
+/// Where a listing's stock physically lives. Inherited from the pharmaceutical
+/// marketplace this was forked from, where a batch was a manufactured lot with
+/// an expiry date. Yukizi sells collectables, which do not expire: nothing
+/// writes `expiryDate` any more and nothing reads it. The column is nullable
+/// rather than dropped so the dates already recorded are not destroyed — the
+/// drop is a separate clean-up, to run after a backup.
 model ProductBatch {
   id              String           @id @default(uuid())
   sellerOfferId   String
   batchNumber     String
-  expiryDate      DateTime
+  expiryDate      DateTime?
   stock           Int
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

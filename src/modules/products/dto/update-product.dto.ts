@@ -113,6 +113,7 @@ export class UpdateProductDto {
   })
   @IsDateString()
   @IsOptional()
+  /** Accepted and ignored — see CreateProductDto.expiryDate. @deprecated */
   expiryDate?: string;
 
   // ── Image Support ──────────────────────────────

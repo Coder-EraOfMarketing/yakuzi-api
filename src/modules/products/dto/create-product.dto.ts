@@ -100,9 +100,21 @@ export class CreateProductDto {
   @Min(0)
   stock: number;
 
-  @ApiProperty({ example: '2026-12-31', description: 'ISO date string' })
+  /**
+   * Accepted and ignored.
+   *
+   * Collectables do not expire. This was mandatory, which is why the seller
+   * form invented 2099-12-31 for every product ever listed. It stays in the
+   * DTO, optional, only so a client that has not been redeployed yet is not
+   * rejected by `forbidNonWhitelisted` — nothing reads it, and it will be
+   * deleted once every caller has stopped sending it.
+   *
+   * @deprecated
+   */
+  @ApiPropertyOptional({ deprecated: true, description: 'Ignored. Collectables do not expire.' })
+  @IsOptional()
   @IsDateString()
-  expiryDate: string;
+  expiryDate?: string;
 
   // ── Image Support ──────────────────────────────
   @ApiPropertyOptional({

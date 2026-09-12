@@ -598,7 +598,7 @@ export class OrdersService {
                 },
                 batches: {
                   where: { stock: { gt: 0 } },
-                  orderBy: { expiryDate: 'asc' },
+                  orderBy: { createdAt: 'asc' },
                 },
               },
             },
@@ -725,7 +725,7 @@ export class OrdersService {
           },
         });
 
-        // 4d. Reduce ProductBatch stock (FIFO — earliest expiry first)
+        // 4d. Reduce stock, oldest batch first
         for (const item of sellerItems) {
           let remaining = item.quantity;
 
@@ -2124,8 +2124,7 @@ export class OrdersService {
             sellerOffer: {
               include: {
                 batches: {
-                  where: { expiryDate: { gt: new Date() } },
-                  orderBy: { expiryDate: 'asc' },
+                  orderBy: { createdAt: 'asc' },
                 },
               },
             },
@@ -2204,14 +2203,34 @@ export class OrdersService {
       }
       const cancelled = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
 
-      // 4b. Restore stock (to the earliest expiry batch)
+      // 4b. Restore stock.
+      //
+      // This used to read only batches whose expiry was still in the future,
+      // and to skip the restore entirely when that list came back empty. Every
+      // listing carries an invented expiry date, so the day those dates passed
+      // a cancelled order would have quietly destroyed its stock — and taken
+      // the "back in stock" notification below with it.
       for (const item of order.items) {
-        if (item.sellerOffer.batches.length > 0) {
+        const batch = item.sellerOffer.batches[0];
+        if (batch) {
           await tx.productBatch.update({
-            where: { id: item.sellerOffer.batches[0].id },
+            where: { id: batch.id },
             data: { stock: { increment: item.quantity } },
           });
+        } else {
+          // No batch row at all: create one rather than drop the units.
+          await tx.productBatch.create({
+            data: {
+              sellerOfferId: item.sellerOffer.id,
+              batchNumber: 'DEFAULT',
+              stock: item.quantity,
+            },
+          });
+        }
 
+        // Waitlist notification — now outside the "did a batch exist" branch,
+        // so a restock always tells the people waiting for it.
+        {
           // Check if there are waitlisted users to notify
           const offerWithVariant = await tx.sellerOffer.findUnique({
             where: { id: item.sellerOffer.id },

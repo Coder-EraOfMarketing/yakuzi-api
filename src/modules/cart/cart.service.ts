@@ -27,7 +27,7 @@ export class CartService {
       include: {
         batches: {
           where: { stock: { gt: 0 } },
-          orderBy: { expiryDate: 'asc' },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
@@ -44,7 +44,7 @@ export class CartService {
                 include: {
                   batches: {
                     where: { stock: { gt: 0 } },
-                    orderBy: { expiryDate: 'asc' },
+                    orderBy: { createdAt: 'asc' },
                   },
                 },
                 orderBy: { finalCustomerPayable: 'asc' },

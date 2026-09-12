@@ -305,7 +305,6 @@ export class ProductsService {
           await this.inventoryService.updateDefaultBatch(
             product.id,
             v.available > 0 ? v.available : normalized.stock,
-            normalized.expiryDate,
           );
           await this.recalculateFinalCustomerPayable(product.id);
         } else {
@@ -361,7 +360,6 @@ export class ProductsService {
           await this.inventoryService.createDefaultBatch(
             product.id,
             v.available > 0 ? v.available : normalized.stock,
-            normalized.expiryDate,
           );
           await this.recalculateFinalCustomerPayable(product.id);
         }
@@ -435,11 +433,7 @@ export class ProductsService {
         },
         include: { category: true, subCategory: true },
       });
-      await this.inventoryService.updateDefaultBatch(
-        product.id,
-        normalized.stock,
-        normalized.expiryDate,
-      );
+      await this.inventoryService.updateDefaultBatch(product.id, normalized.stock);
       await this.recalculateFinalCustomerPayable(product.id);
     } else {
       const productData: Prisma.SellerOfferCreateInput = {
@@ -483,11 +477,7 @@ export class ProductsService {
         },
       });
 
-      await this.inventoryService.createDefaultBatch(
-        product.id,
-        normalized.stock,
-        normalized.expiryDate,
-      );
+      await this.inventoryService.createDefaultBatch(product.id, normalized.stock);
       await this.recalculateFinalCustomerPayable(product.id);
     }
 
@@ -579,11 +569,7 @@ export class ProductsService {
       // await this.prisma.catalogProductImage.createMany
     }
 
-    await this.inventoryService.updateDefaultBatch(
-      productId,
-      dto.stock,
-      dto.expiryDate,
-    );
+    await this.inventoryService.updateDefaultBatch(productId, dto.stock);
 
 
 
@@ -804,12 +790,8 @@ export class ProductsService {
       }
     }
 
-    if (stock !== undefined || expiryDate !== undefined) {
-      await this.inventoryService.updateDefaultBatch(
-        product.id,
-        stock,
-        expiryDate,
-      );
+    if (stock !== undefined) {
+      await this.inventoryService.updateDefaultBatch(product.id, stock);
 
       if (stock !== undefined && stock > 0) {
         const offerWithVariant = await this.prisma.sellerOffer.findUnique({
@@ -1248,7 +1230,7 @@ export class ProductsService {
                     state: true,
                   },
                 },
-                batches: { orderBy: { expiryDate: 'asc' } },
+                batches: { orderBy: { createdAt: 'asc' } },
               },
               orderBy: { mrp: 'asc' },
             },
@@ -1266,7 +1248,7 @@ export class ProductsService {
                         state: true,
                       },
                     },
-                    batches: { orderBy: { expiryDate: 'asc' } },
+                    batches: { orderBy: { createdAt: 'asc' } },
                   },
                   orderBy: { mrp: 'asc' },
                 },
@@ -1318,7 +1300,7 @@ export class ProductsService {
                 state: true,
               },
             },
-            batches: { orderBy: { expiryDate: 'asc' } },
+            batches: { orderBy: { createdAt: 'asc' } },
           },
           orderBy: { mrp: 'asc' },
         },
@@ -1336,7 +1318,7 @@ export class ProductsService {
                     state: true,
                   },
                 },
-                batches: { orderBy: { expiryDate: 'asc' } },
+                batches: { orderBy: { createdAt: 'asc' } },
               },
               orderBy: { mrp: 'asc' },
             },
@@ -1852,7 +1834,7 @@ export class ProductsService {
               include: {
                 batches: {
                   where: { stock: { gt: 0 } },
-                  orderBy: { expiryDate: 'asc' },
+                  orderBy: { createdAt: 'asc' },
                 },
                 seller: {
                   select: {
@@ -1870,7 +1852,7 @@ export class ProductsService {
                   include: {
                     batches: {
                       where: { stock: { gt: 0 } },
-                      orderBy: { expiryDate: 'asc' },
+                      orderBy: { createdAt: 'asc' },
                     },
                     seller: {
                       select: {

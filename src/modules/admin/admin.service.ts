@@ -918,7 +918,7 @@ export class AdminService {
                 stock: true,
                 expiryDate: true,
               },
-              orderBy: { expiryDate: 'asc' },
+              orderBy: { createdAt: 'asc' },
             },
             inventoryAlerts: {
               select: {
@@ -1080,7 +1080,7 @@ export class AdminService {
             catalogProduct: { select: { id: true, name: true, slug: true } },
           },
         },
-        batches: { orderBy: { expiryDate: 'asc' } },
+        batches: { orderBy: { createdAt: 'asc' } },
 
         inventoryAlerts: { orderBy: { createdAt: 'desc' }, take: 10 },
         _count: {

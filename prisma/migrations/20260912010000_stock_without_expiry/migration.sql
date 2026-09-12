@@ -1,0 +1,13 @@
+-- Stock no longer carries an expiry date.
+--
+-- Yukizi sells collectables. The expiry model came from the pharmaceutical
+-- marketplace this codebase was forked from, where a batch was a manufactured
+-- lot that went out of date. Every listing here has been carrying an invented
+-- date (the seller form sent 2099-12-31; channel syncs sent "a year from now"),
+-- and that fiction had teeth: cancelling an order refused to restock a batch
+-- whose date had passed.
+--
+-- This only DROPS THE REQUIREMENT. The column and the dates already in it are
+-- left alone, so nothing is lost and this is safe to roll back by restoring
+-- NOT NULL. Dropping the column itself is a separate clean-up.
+ALTER TABLE "product_batches" ALTER COLUMN "expiryDate" DROP NOT NULL;
