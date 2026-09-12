@@ -27,7 +27,11 @@ import { memoryStorage } from 'multer';
 
 const multerOptions = {
   storage: memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  // The outer bound only. StorageService.validateFile applies the real,
+  // per-type ceiling — 5 MB for a picture or a document, 40 MB for a banner
+  // video. Leaving this at 5 MB would reject a banner video here, before the
+  // service ever saw what type it was.
+  limits: { fileSize: 40 * 1024 * 1024 },
 };
 
 const fileUploadBody = {

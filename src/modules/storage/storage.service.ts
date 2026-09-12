@@ -105,7 +105,14 @@ export class StorageService implements OnModuleInit {
     'application/pdf',
   ];
 
-  private readonly MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+  private readonly MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB — images and documents
+
+  /**
+   * Banner videos. 40 MB is about 20 seconds of decently encoded 1080p, which
+   * is longer than any hero banner should be; anything beyond that belongs on a
+   * video host, not in the page's critical path.
+   */
+  private readonly MAX_VIDEO_SIZE = 40 * 1024 * 1024;
 
   async uploadProductImage(file: Express.Multer.File): Promise<string> {
     this.validateFile(file, this.ALLOWED_IMAGE_TYPES);
@@ -297,9 +304,19 @@ export class StorageService implements OnModuleInit {
       );
     }
 
-    if (file.size > this.MAX_FILE_SIZE) {
+    // A banner video cannot live inside the picture limit — five megabytes is
+    // roughly two seconds of 1080p. The ceiling therefore follows the file's
+    // own type rather than being one number for everything, so pictures keep
+    // exactly the limit they had.
+    const limit = file.mimetype.startsWith('video/')
+      ? this.MAX_VIDEO_SIZE
+      : this.MAX_FILE_SIZE;
+
+    if (file.size > limit) {
       throw new BadRequestException(
-        `File too large. Maximum size is ${this.MAX_FILE_SIZE / (1024 * 1024)}MB`,
+        `File too large. Maximum size is ${limit / (1024 * 1024)}MB for ${
+          file.mimetype.startsWith('video/') ? 'videos' : 'images'
+        }.`,
       );
     }
   }
