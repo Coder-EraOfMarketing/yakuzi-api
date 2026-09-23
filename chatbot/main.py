@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import traceback
@@ -138,17 +139,65 @@ def get_db_connection():
         print(f"Database connection error: {e}", file=sys.stderr)
         return None
 
+# Retail filler the model tacks onto a series name. Left in, they turn the
+# search into a phrase nothing can match: a customer asking "which naruto toy
+# should i buy" produced ILIKE '%naruto toy%', which finds nothing, and the
+# assistant answered "I couldn't find any Naruto toys in the store" while a
+# Naruto figure sat on the page behind it.
+SEARCH_STOPWORDS = {
+    'a', 'an', 'and', 'any', 'are', 'best', 'buy', 'can', 'cheap', 'collectible',
+    'collectibles', 'do', 'figure', 'figures', 'figurine', 'figurines', 'find',
+    'for', 'from', 'good', 'have', 'in', 'is', 'item', 'items', 'me', 'merch',
+    'merchandise', 'model', 'my', 'of', 'on', 'or', 'product', 'products',
+    'recommend', 'should', 'show', 'some', 'statue', 'statues', 'stock', 'store',
+    'suggest', 'the', 'to', 'toy', 'toys', 'want', 'what', 'which', 'with', 'you',
+}
+
+
+def search_tokens(query: str) -> list:
+    """The meaningful words in a search phrase, most specific first.
+
+    ILIKE '%<whole phrase>%' only ever matches a contiguous substring, so any
+    query with more than one word was effectively a guess that the catalogue
+    spelled things exactly the way the customer did. Splitting lets "naruto toy"
+    match a product called "Naruto Uzumaki Chibi".
+
+    Falls back to the raw words, then to the whole string, so a search made
+    entirely of stopwords still asks the database something.
+    """
+    words = re.findall(r"[a-z0-9]+", (query or '').lower())
+    kept = [w for w in words if len(w) > 1 and w not in SEARCH_STOPWORDS]
+    return (kept or words or [(query or '').strip().lower()])[:6]
+
+
 def search_products(query: str) -> str:
     """Searches the database for products matching the query, including
     description, category, live stock across active/approved seller offers,
     and average review rating."""
     conn = get_db_connection()
     if not conn: return "Error: Could not connect to database."
+    tokens = search_tokens(query)
+    likes = [f"%{t}%" for t in tokens]
+    # One OR-group per token: a product needs to match at least one word, not
+    # the whole phrase. match_score then ranks by how much of the phrase landed,
+    # weighting a name or manufacturer hit above a passing mention in the
+    # description, so "naruto figure" still puts the Naruto figures on top.
+    score_sql = ' + '.join(
+        '(CASE WHEN cp.name ILIKE %s OR cp.manufacturer ILIKE %s THEN 2 '
+        'WHEN cp.description ILIKE %s THEN 1 ELSE 0 END)'
+        for _ in likes
+    )
+    where_sql = ' OR '.join(
+        '(cp.name ILIKE %s OR cp.manufacturer ILIKE %s OR cp.description ILIKE %s)'
+        for _ in likes
+    )
+    params = [t for t in likes for _ in range(3)] * 2
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 'SELECT cp.name, cp.slug, cp.manufacturer, cp.mrp, cp.description, '
                 'c.name AS category, '
+                f'({score_sql}) AS match_score, '
                 'COALESCE(('
                 '  SELECT SUM(pb.stock) FROM product_batches pb '
                 '  JOIN seller_offers so ON so.id = pb."sellerOfferId" '
@@ -162,16 +211,16 @@ def search_products(query: str) -> str:
                 '), 0) AS avg_rating '
                 'FROM catalog_products cp '
                 'JOIN categories c ON c.id = cp."categoryId" '
-                'WHERE (cp.name ILIKE %s OR cp.manufacturer ILIKE %s OR cp.description ILIKE %s) '
+                f'WHERE ({where_sql}) '
                 'AND cp."isActive" = true AND cp."deletedAt" IS NULL '
                 # Was ORDER BY cp.name: a search for "Naruto" returned the first
                 # five figures alphabetically, so the assistant recommended
                 # whatever sorted earliest -- often out of stock -- instead of the
-                # best thing we can actually sell. Name matches beat description
-                # matches, then in-stock, then well-reviewed.
-                'ORDER BY (cp.name ILIKE %s) DESC, stock DESC, avg_rating DESC, cp.name '
+                # best thing we can actually sell. Now: closest match to what was
+                # asked, then in-stock, then well-reviewed.
+                'ORDER BY match_score DESC, stock DESC, avg_rating DESC, cp.name '
                 'LIMIT 5',
-                (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%")
+                tuple(params)
             )
             rows = cur.fetchall()
             # RealDictCursor returns Decimal for numeric columns (mrp, avg_rating).
@@ -185,6 +234,8 @@ def search_products(query: str) -> str:
                 # assemble -- the storefront route is /products/<slug>, and a
                 # guessed URL is a broken link in front of a customer.
                 row['url'] = f"/products/{row['slug']}" if row.get('slug') else None
+                # Ranking detail, not something to read out to a customer.
+                row.pop('match_score', None)
                 row.pop('slug', None)
             return str(rows) if rows else f"No products found matching '{query}'."
     except Exception as e:

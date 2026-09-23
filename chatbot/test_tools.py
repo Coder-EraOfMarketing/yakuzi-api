@@ -27,17 +27,46 @@ def test_search_products_queries_description_category_stock_and_rating():
     assert "stock" in executed_sql.lower()
     assert "avg_rating" in executed_sql
     params = mock_cursor.execute.call_args[0][1]
-    # Fourth copy drives the "name match beats description match" ordering term.
-    assert params == ("%naruto%", "%naruto%", "%naruto%", "%naruto%")
+    # One token, three columns, used twice: once to score, once to filter.
+    assert params == ("%naruto%",) * 6
 
 
-def test_search_products_ranks_by_name_match_then_stock_then_rating():
+def test_search_products_ranks_by_match_then_stock_then_rating():
     mock_conn, mock_cursor = _mock_conn_returning([])
     with patch("main.get_db_connection", return_value=mock_conn):
         search_products("naruto")
     executed_sql = mock_cursor.execute.call_args[0][0]
     # Alphabetical ordering used to surface out-of-stock figures first.
-    assert "ORDER BY (cp.name ILIKE %s) DESC, stock DESC, avg_rating DESC" in executed_sql
+    assert "ORDER BY match_score DESC, stock DESC, avg_rating DESC" in executed_sql
+
+
+def test_search_products_drops_retail_filler_from_a_natural_phrase():
+    """"which naruto toy should i buy" must not become ILIKE '%naruto toy%'."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("which naruto toy should i buy")
+    params = mock_cursor.execute.call_args[0][1]
+    assert set(params) == {"%naruto%"}
+
+
+def test_search_products_matches_any_token_not_the_whole_phrase():
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("naruto uzumaki")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    where = executed_sql.split("WHERE", 1)[1]
+    # Tokens are OR'd: a product named "Naruto Uzumaki Chibi" matches, and so
+    # does one named just "Naruto".
+    assert " OR " in where
+    params = mock_cursor.execute.call_args[0][1]
+    assert set(params) == {"%naruto%", "%uzumaki%"}
+
+
+def test_search_tokens_falls_back_when_every_word_is_filler():
+    from main import search_tokens
+    # Never send an empty WHERE clause to the database.
+    assert search_tokens("what should i buy") == ["what", "should", "i", "buy"]
+    assert search_tokens("") == [""]
 
 
 def test_search_products_returns_a_ready_made_product_url():
