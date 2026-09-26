@@ -24,7 +24,16 @@ export class MerchantController {
     private readonly config: MerchantConfigService,
   ) {}
 
-  /** Readiness + the last run, for the settings panel. */
+  /**
+   * Readiness + the last run, for the settings panel.
+   *
+   * Wrapped in `{ message, data }` like every other controller in this API.
+   * There is no global transform interceptor, so the shape a controller
+   * returns is exactly what the client receives — and the admin client
+   * unwraps `data.data`. Returning the payload bare made that `undefined`,
+   * and the panel threw before it could render, reporting only
+   * "Could not read Merchant Center status".
+   */
   @Get('status')
   @ApiOperation({ summary: 'Merchant Center integration status' })
   async status() {
@@ -32,7 +41,10 @@ export class MerchantController {
       this.config.problems(),
       this.sync.lastRun(),
     ]);
-    return { ready: problems.length === 0, problems, lastSync: last };
+    return {
+      message: 'Merchant Center status retrieved successfully',
+      data: { ready: problems.length === 0, problems, lastSync: last },
+    };
   }
 
   /**
@@ -44,6 +56,9 @@ export class MerchantController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Push products to Merchant Center now' })
   async runSync(@Body() body: { dryRun?: boolean } = {}) {
-    return this.sync.syncAll({ dryRun: !!body?.dryRun });
+    const data = await this.sync.syncAll({ dryRun: !!body?.dryRun });
+    // Same wrapper as `status` above — Dry run and Sync now were failing for
+    // exactly the same reason.
+    return { message: 'Merchant Center sync completed', data };
   }
 }
