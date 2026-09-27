@@ -12,6 +12,39 @@
  * row never fails a whole run.
  */
 
+import { createHash } from 'node:crypto';
+
+/**
+ * Google's hard limit on the `id` attribute. Slugs routinely run past this —
+ * "luffy-and-shanks-straw-hat-moment-collectible-figure-set-or-one-piece-unknown"
+ * is 76 characters — and every such product was rejected with
+ * `Validation failed: Value too long in attribute: id`.
+ */
+const MAX_OFFER_ID = 50;
+
+/**
+ * An offer id within Google's limit that is STABLE and UNIQUE.
+ *
+ * Both properties are load-bearing:
+ *
+ *  - Stable, because the offer id is the product's identity in Merchant
+ *    Center. If it changed between runs, every sync would create a duplicate
+ *    listing instead of updating the existing one.
+ *  - Unique, because plain truncation collides. Yukizi's slugs share long
+ *    prefixes ("...-collectible-statue-..."), so two different products can
+ *    easily agree on their first 50 characters — and the second would
+ *    silently overwrite the first on Google.
+ *
+ * So: keep the slug when it fits, otherwise truncate and append a short
+ * digest of the WHOLE slug, which differs even when the prefixes match.
+ */
+export function boundedOfferId(slug: string): string {
+  if (slug.length <= MAX_OFFER_ID) return slug;
+  const digest = createHash('sha1').update(slug).digest('hex').slice(0, 8);
+  // 41 + '-' + 8 = 50.
+  return `${slug.slice(0, MAX_OFFER_ID - 9).replace(/-+$/, '')}-${digest}`;
+}
+
 export interface CatalogProductForFeed {
   id: string;
   slug: string | null;
@@ -75,7 +108,7 @@ export function mapToMerchantProduct(
     expirationDate?: string;
   },
 ): MapResult {
-  const offerId = (p.slug || p.id).trim();
+  const offerId = boundedOfferId((p.slug || p.id).trim());
 
   // A product URL must be real: the storefront route is /products/<slug>, and a
   // guessed link is a disapproval (and a broken click).
