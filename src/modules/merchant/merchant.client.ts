@@ -19,7 +19,15 @@ import { MerchantAuthService } from './merchant.auth';
  * Center account; no OAuth screen, no refresh tokens to store.
  */
 
-const API_BASE = 'https://merchantapi.googleapis.com/products/v1beta';
+/**
+ * Merchant API version. v1beta was shut off on 2026-02-28 and every call
+ * returned HTTP 409 telling us to upgrade, so this is pinned to v1.
+ *
+ * Kept as a single constant because the version lives in the URL: moving it
+ * again is a one-line change, which is the whole reason this client is REST
+ * over axios rather than a generated SDK.
+ */
+const API_BASE = 'https://merchantapi.googleapis.com/products/v1';
 
 @Injectable()
 export class MerchantClient {
@@ -46,8 +54,10 @@ export class MerchantClient {
   async deleteProduct(cfg: MerchantConfig, offerId: string, contentLanguage: string, feedLabel: string): Promise<void> {
     const account = `accounts/${cfg.accountId}`;
     const dataSource = `${account}/dataSources/${cfg.dataSourceId}`;
-    // The productInput name encodes channel~language~feedLabel~offerId.
-    const name = `${account}/productInputs/online~${contentLanguage}~${feedLabel}~${offerId}`;
+    // The productInput name encodes contentLanguage~feedLabel~offerId. v1
+    // dropped the leading channel segment along with the `channel` field, so
+    // the old `online~en~IN~sku` form no longer resolves.
+    const name = `${account}/productInputs/${contentLanguage}~${feedLabel}~${offerId}`;
     const url = `${API_BASE}/${name}?dataSource=${encodeURIComponent(dataSource)}`;
     try {
       const token = await this.token(cfg);
