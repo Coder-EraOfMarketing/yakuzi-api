@@ -20,7 +20,8 @@ describe('mapToMerchantProduct', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.product.offerId).toBe('akaza-yukizi');
-    expect(r.product.channel).toBe('ONLINE');
+    // `channel` was removed in Merchant API v1 — sending it is rejected.
+    expect(r.product).not.toHaveProperty('channel');
     expect(r.product.feedLabel).toBe('IN');
     expect(r.product.attributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
     expect(r.product.attributes.imageLink).toBe('https://cdn/img.jpg');

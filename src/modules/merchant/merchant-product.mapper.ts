@@ -26,7 +26,6 @@ export interface CatalogProductForFeed {
 }
 
 export interface MerchantProductInput {
-  channel: 'ONLINE';
   offerId: string;
   contentLanguage: string;
   feedLabel: string;
@@ -130,7 +129,6 @@ export function mapToMerchantProduct(
   return {
     ok: true,
     product: {
-      channel: 'ONLINE',
       offerId,
       contentLanguage: opts.contentLanguage ?? 'en',
       feedLabel: opts.feedLabel ?? 'IN',
