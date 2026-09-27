@@ -1,4 +1,4 @@
-import { mapToMerchantProduct, CatalogProductForFeed } from './merchant-product.mapper';
+import { mapToMerchantProduct, boundedOfferId, CatalogProductForFeed } from './merchant-product.mapper';
 
 const base: CatalogProductForFeed = {
   id: 'prod-1',
@@ -75,5 +75,66 @@ describe('mapToMerchantProduct', () => {
   it('trims a trailing slash on the site URL so links are not doubled', () => {
     const r = mapToMerchantProduct(base, { siteUrl: 'https://yukizi.com/' });
     if (r.ok) expect(r.product.productAttributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
+  });
+});
+
+/**
+ * Google rejected every product with
+ * `Validation failed: Value too long in attribute: id` — the `id` attribute
+ * caps at 50 characters and Yukizi's slugs run to 76.
+ *
+ * The offer id is the product's IDENTITY in Merchant Center, so the fix has
+ * two properties that matter more than the length itself, and each has a
+ * silent failure mode:
+ *   - not stable  -> every sync creates a duplicate listing instead of
+ *                    updating the existing one
+ *   - not unique  -> one product silently overwrites another, because these
+ *                    slugs share very long prefixes
+ */
+describe('boundedOfferId', () => {
+  const LONG = 'luffy-and-shanks-straw-hat-moment-collectible-figure-set-or-one-piece-unknown';
+
+  it('leaves a slug that already fits untouched', () => {
+    expect(boundedOfferId('akaza-yukizi')).toBe('akaza-yukizi');
+  });
+
+  it('keeps a 50-character slug exactly as it is', () => {
+    const exact = 'a'.repeat(50);
+    expect(boundedOfferId(exact)).toBe(exact);
+  });
+
+  it("brings an over-long slug within Google's 50-character limit", () => {
+    expect(LONG.length).toBeGreaterThan(50);
+    expect(boundedOfferId(LONG).length).toBeLessThanOrEqual(50);
+  });
+
+  it('is stable — the same slug always yields the same id', () => {
+    // If this ever drifts, every sync creates duplicates on Google rather
+    // than updating what is already there.
+    expect(boundedOfferId(LONG)).toBe(boundedOfferId(LONG));
+  });
+
+  it('distinguishes slugs that share their first 50 characters', () => {
+    // The real collision risk: plain truncation would map both of these to
+    // the same id and one product would overwrite the other.
+    const prefix = 'sanji-ifrit-jambe-collectible-statue-28cm-or-one-piece';
+    const a = `${prefix}-red`;
+    const b = `${prefix}-blue`;
+
+    expect(a.slice(0, 50)).toBe(b.slice(0, 50)); // truncation alone collides
+    expect(boundedOfferId(a)).not.toBe(boundedOfferId(b));
+  });
+
+  it('does not leave a trailing hyphen before the digest', () => {
+    const s = 'x'.repeat(40) + '-' + 'y'.repeat(40);
+    expect(boundedOfferId(s)).not.toMatch(/--/);
+  });
+
+  it('is applied by the mapper, not just available', () => {
+    const r = mapToMerchantProduct({ ...base, slug: LONG }, opts);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.product.offerId.length).toBeLessThanOrEqual(50);
+    expect(r.product.offerId).toBe(boundedOfferId(LONG));
   });
 });
