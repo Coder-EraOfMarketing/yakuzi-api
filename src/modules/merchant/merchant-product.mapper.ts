@@ -29,7 +29,8 @@ export interface MerchantProductInput {
   offerId: string;
   contentLanguage: string;
   feedLabel: string;
-  attributes: Record<string, unknown>;
+  /** Renamed from `attributes` in Merchant API v1. */
+  productAttributes: Record<string, unknown>;
 }
 
 export type MapResult =
@@ -101,8 +102,9 @@ export function mapToMerchantProduct(
     description: clamp(descriptionSource, MAX_DESCRIPTION),
     link: `${siteUrl}/products/${p.slug}`,
     imageLink: p.imageUrl,
-    availability: p.stock > 0 ? 'in_stock' : 'out_of_stock',
-    condition: 'new',
+    // Enums in v1, not the free strings v1beta accepted ('in_stock', 'new').
+    availability: p.stock > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK',
+    condition: 'NEW',
     price: {
       // Merchant API takes price as integer micros in a string.
       amountMicros: String(Math.round(p.price * 1_000_000)),
@@ -132,7 +134,7 @@ export function mapToMerchantProduct(
       offerId,
       contentLanguage: opts.contentLanguage ?? 'en',
       feedLabel: opts.feedLabel ?? 'IN',
-      attributes,
+      productAttributes: attributes,
     },
   };
 }

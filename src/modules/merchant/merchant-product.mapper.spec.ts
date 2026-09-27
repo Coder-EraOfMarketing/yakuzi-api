@@ -23,20 +23,20 @@ describe('mapToMerchantProduct', () => {
     // `channel` was removed in Merchant API v1 — sending it is rejected.
     expect(r.product).not.toHaveProperty('channel');
     expect(r.product.feedLabel).toBe('IN');
-    expect(r.product.attributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
-    expect(r.product.attributes.imageLink).toBe('https://cdn/img.jpg');
-    expect(r.product.attributes.brand).toBe('Banpresto');
-    expect(r.product.attributes.identifierExists).toBe(false);
-    expect(r.product.attributes.availability).toBe('in_stock');
-    expect(r.product.attributes.price).toEqual({ amountMicros: '1044160000', currencyCode: 'INR' });
+    expect(r.product.productAttributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
+    expect(r.product.productAttributes.imageLink).toBe('https://cdn/img.jpg');
+    expect(r.product.productAttributes.brand).toBe('Banpresto');
+    expect(r.product.productAttributes.identifierExists).toBe(false);
+    expect(r.product.productAttributes.availability).toBe('IN_STOCK');
+    expect(r.product.productAttributes.price).toEqual({ amountMicros: '1044160000', currencyCode: 'INR' });
     // HTML is stripped from the description.
-    expect(r.product.attributes.description).toBe('Upper Moon Three.');
+    expect(r.product.productAttributes.description).toBe('Upper Moon Three.');
   });
 
   it('marks a zero-stock product out_of_stock, still listed', () => {
     const r = mapToMerchantProduct({ ...base, stock: 0 }, opts);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.product.attributes.availability).toBe('out_of_stock');
+    if (r.ok) expect(r.product.productAttributes.availability).toBe('OUT_OF_STOCK');
   });
 
   it('drops a product with no live price', () => {
@@ -58,22 +58,22 @@ describe('mapToMerchantProduct', () => {
   });
 
   it('omits an Unknown/blank brand rather than advertising it', () => {
-    expect((mapToMerchantProduct({ ...base, manufacturer: 'Unknown' }, opts) as any).product.attributes.brand).toBeUndefined();
-    expect((mapToMerchantProduct({ ...base, manufacturer: null }, opts) as any).product.attributes.brand).toBeUndefined();
+    expect((mapToMerchantProduct({ ...base, manufacturer: 'Unknown' }, opts) as any).product.productAttributes.brand).toBeUndefined();
+    expect((mapToMerchantProduct({ ...base, manufacturer: null }, opts) as any).product.productAttributes.brand).toBeUndefined();
   });
 
   it('rounds price to whole micros', () => {
     const r = mapToMerchantProduct({ ...base, price: 250 }, opts);
-    if (r.ok) expect((r.product.attributes.price as any).amountMicros).toBe('250000000');
+    if (r.ok) expect((r.product.productAttributes.price as any).amountMicros).toBe('250000000');
   });
 
   it('truncates an overlong title', () => {
     const r = mapToMerchantProduct({ ...base, name: 'x'.repeat(300) }, opts);
-    if (r.ok) expect((r.product.attributes.title as string).length).toBeLessThanOrEqual(150);
+    if (r.ok) expect((r.product.productAttributes.title as string).length).toBeLessThanOrEqual(150);
   });
 
   it('trims a trailing slash on the site URL so links are not doubled', () => {
     const r = mapToMerchantProduct(base, { siteUrl: 'https://yukizi.com/' });
-    if (r.ok) expect(r.product.attributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
+    if (r.ok) expect(r.product.productAttributes.link).toBe('https://yukizi.com/products/akaza-yukizi');
   });
 });
