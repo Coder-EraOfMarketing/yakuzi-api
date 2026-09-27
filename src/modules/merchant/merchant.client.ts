@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { JWT } from 'google-auth-library';
 import axios, { AxiosError } from 'axios';
 import { MerchantConfig } from './merchant.config';
 import { MerchantProductInput } from './merchant-product.mapper';
+import { MerchantAuthService } from './merchant.auth';
 
 /**
  * Thin wrapper over the Google Merchant API Products sub-API.
@@ -12,38 +12,23 @@ import { MerchantProductInput } from './merchant-product.mapper';
  * version move without a dependency bump, and the request bodies stay exactly
  * the shapes the mapper produces (easy to inspect in a dry run).
  *
- * Auth is a service-account JWT (google-auth-library). The account must be
- * added as a user on the Merchant Center account; no OAuth screen, no refresh
- * tokens to store.
+ * Auth is delegated to MerchantAuthService, which uses either an explicit
+ * service-account key or — when none is set and the API is running on a GCP
+ * VM — the VM's own attached service account via Application Default
+ * Credentials. Either way the account must be added as a user on the Merchant
+ * Center account; no OAuth screen, no refresh tokens to store.
  */
 
 const API_BASE = 'https://merchantapi.googleapis.com/products/v1beta';
-const SCOPE = 'https://www.googleapis.com/auth/content';
 
 @Injectable()
 export class MerchantClient {
   private readonly logger = new Logger(MerchantClient.name);
-  private jwt: JWT | null = null;
-  private jwtEmail: string | null = null;
 
-  private auth(cfg: MerchantConfig): JWT {
-    if (!cfg.credentials) throw new Error('Merchant credentials are not configured');
-    // Rebuild only if the key changed, so a token can be cached across calls.
-    if (!this.jwt || this.jwtEmail !== cfg.credentials.client_email) {
-      this.jwt = new JWT({
-        email: cfg.credentials.client_email,
-        key: cfg.credentials.private_key,
-        scopes: [SCOPE],
-      });
-      this.jwtEmail = cfg.credentials.client_email;
-    }
-    return this.jwt;
-  }
+  constructor(private readonly auth: MerchantAuthService) {}
 
-  private async token(cfg: MerchantConfig): Promise<string> {
-    const { token } = await this.auth(cfg).getAccessToken();
-    if (!token) throw new Error('Could not obtain a Google access token');
-    return token;
+  private token(cfg: MerchantConfig): Promise<string> {
+    return this.auth.token(cfg);
   }
 
   /** Insert or update one product input. */

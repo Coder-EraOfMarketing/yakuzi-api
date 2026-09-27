@@ -37,13 +37,18 @@ export class MerchantController {
   @Get('status')
   @ApiOperation({ summary: 'Merchant Center integration status' })
   async status() {
-    const [problems, last] = await Promise.all([
+    const [problems, last, identity] = await Promise.all([
       this.config.problems(),
       this.sync.lastRun(),
+      this.config.identity(),
     ]);
     return {
       message: 'Merchant Center status retrieved successfully',
-      data: { ready: problems.length === 0, problems, lastSync: last },
+      // `identity` is what tells the admin WHICH Google account to authorise
+      // in Merchant Center. With an explicit key they could read it out of the
+      // key file; with Application Default Credentials on a GCP VM there is no
+      // file, so the server is the only thing that knows.
+      data: { ready: problems.length === 0, problems, lastSync: last, identity },
     };
   }
 

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { MerchantAuthService, type MerchantIdentity } from './merchant.auth';
 
 /**
  * Where the Merchant Center integration reads its settings from.
@@ -31,7 +32,10 @@ export const MERCHANT_KEYS = {
 export class MerchantConfigService {
   private readonly logger = new Logger(MerchantConfigService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auth: MerchantAuthService,
+  ) {}
 
   async load(): Promise<MerchantConfig> {
     const rows = await this.prisma.systemSetting
@@ -55,16 +59,32 @@ export class MerchantConfigService {
   /**
    * Reasons the integration cannot run, in words an admin can act on. Empty
    * means it is ready.
+   *
+   * Credentials are no longer required to be an explicit key: running on a GCP
+   * VM with a service account attached is enough, so the check asks the auth
+   * service what identity is actually available rather than looking for an env
+   * var. Reported alongside `identity()` so the panel can name the account
+   * that must be authorised in Merchant Center.
    */
   async problems(): Promise<string[]> {
     const cfg = await this.load();
     const out: string[] = [];
     if (!cfg.accountId) out.push('Merchant Center account id is not set.');
     if (!cfg.dataSourceId) out.push('Merchant Center API data source id is not set.');
-    if (!cfg.credentials) {
-      out.push('GOOGLE_MERCHANT_CREDENTIALS (the service-account key) is not set on the server.');
+
+    const identity = await this.auth.identity(cfg);
+    if (identity.mode === 'none') {
+      out.push(
+        identity.reason ??
+          'No Google service account is available to authenticate with.',
+      );
     }
     return out;
+  }
+
+  /** Which Google identity the sync will use. For display in the admin panel. */
+  async identity(): Promise<MerchantIdentity> {
+    return this.auth.identity(await this.load());
   }
 
   private readCredentials(): MerchantConfig['credentials'] {

@@ -20,8 +20,13 @@ import type { MerchantConfigService } from './merchant.config';
 describe('MerchantController response envelope', () => {
   const lastRun = { ran: true, pushed: 4, failed: 0, skipped: [] };
 
+  const identity = { mode: 'adc' as const, email: 'vm@project.iam.gserviceaccount.com' };
+
   function build(problems: string[]) {
-    const config = { problems: jest.fn().mockResolvedValue(problems) };
+    const config = {
+      problems: jest.fn().mockResolvedValue(problems),
+      identity: jest.fn().mockResolvedValue(identity),
+    };
     const sync = {
       lastRun: jest.fn().mockResolvedValue(lastRun),
       syncAll: jest.fn().mockResolvedValue({ ...lastRun, dryRun: true }),
@@ -50,6 +55,9 @@ describe('MerchantController response envelope', () => {
     expect(data.ready).toBe(true);
     expect(data.problems).toEqual([]);
     expect(data.lastSync).toEqual(lastRun);
+    // The panel needs this to tell the admin which account to authorise in
+    // Merchant Center — with ADC there is no key file to read it from.
+    expect(data.identity).toEqual(identity);
   });
 
   it('reports not ready and passes the problems through verbatim', async () => {
