@@ -158,6 +158,12 @@ SEARCH_STOPWORDS = {
     'above', 'around', 'below', 'between', 'budget', 'cheaper', 'cost', 'costs',
     'inr', 'less', 'over', 'price', 'priced', 'prices', 'rs', 'rupee', 'rupees',
     'than', 'under', 'within',
+    # "Give me more" phrasing. These are how a customer asks for the next
+    # page, and how the model is told to ask for it. Left in, "suggest me more
+    # items under 2000" searched the catalogue for a product called "more" and
+    # came back empty on a question 30 products answer.
+    'another', 'anything', 'else', 'more', 'next', 'other', 'page', 'pg',
+    'something',
 }
 
 
@@ -211,6 +217,28 @@ def parse_budget(query: str):
     return (num(mx.group(1)) if mx else None, num(mn.group(1)) if mn else None)
 
 
+# How many products one search returns. The widget renders them as cards and
+# the model quotes them all, so a page is a screenful, not a catalogue dump.
+PAGE_SIZE = 5
+_MAX_PAGE = 200
+
+
+def parse_page(query: str) -> int:
+    """The 1-based result page asked for inside the query text.
+
+    "suggest me more" used to be unanswerable: every tool call for the same
+    budget returned the same five rows, so the assistant told customers it had
+    already listed everything while 30 products qualified. The page rides in
+    the text for the same reason the budget does — the SDK the production
+    sidecar runs on drops Optional parameters from the declaration, so `query`
+    is the only argument guaranteed to arrive intact.
+    """
+    m = re.search(r'\b(?:page|pg)\s*#?\s*([0-9]{1,3})\b', (query or '').lower())
+    if not m:
+        return 1
+    return max(1, min(int(m.group(1)), _MAX_PAGE))
+
+
 # Structured copies of what the product tools returned during the current
 # /chat request. The storefront widget renders these as tappable product
 # cards — image, price, working link — instead of leaving the customer with
@@ -256,6 +284,7 @@ def _normalize_product_rows(rows):
         row['avg_rating'] = float(row['avg_rating']) if row.get('avg_rating') is not None else None
         row['url'] = f"/products/{row['slug']}" if row.get('slug') else None
         row.pop('match_score', None)
+        row.pop('total_matches', None)
         row.pop('slug', None)
     _record_products(rows)
     return rows
@@ -303,6 +332,35 @@ _PRODUCT_FROM_SQL = (
 _PRODUCT_ACTIVE_SQL = 'cp."isActive" = true AND cp."deletedAt" IS NULL'
 
 
+def _strip_page(query: str) -> str:
+    """The query without its page phrase, so the next page is asked for as
+    "...page 3" and not "...page 2 page 3"."""
+    return re.sub(r'\s*\b(?:page|pg)\s*#?\s*[0-9]{1,3}\b', '', query or '',
+                  flags=re.IGNORECASE).strip()
+
+
+def _more_results_note(page: int, shown_through: int, total: int, query: str) -> str:
+    """What the model is told about everything it did NOT get.
+
+    A tool that silently returns its first five rows reads exactly like a tool
+    that returned all of them, so the assistant answered "these are all the
+    items currently available under 2000" for a catalogue holding 30 of them,
+    and had nothing new to say when the customer asked for more. Spelling out
+    the count and the literal next call is what makes "suggest me more" work.
+    """
+    if total <= shown_through:
+        return ""
+    next_query = f"{_strip_page(query)} page {page + 1}".strip()
+    first = (page - 1) * PAGE_SIZE + 1
+    return (
+        f"\n\n[Showing products {first}-{shown_through} of {total} that match "
+        f"(page {page}). {total - shown_through} more were not returned, so do NOT "
+        f"tell the customer this is everything. For the next {PAGE_SIZE}, call "
+        f"search_products again with query \"{next_query}\" — and only show the "
+        f"customer products they have not seen yet.]"
+    )
+
+
 def search_products(query: str) -> str:
     """Searches the catalogue for products, optionally within a price budget.
 
@@ -313,8 +371,13 @@ def search_products(query: str) -> str:
     filter. Pass just the budget (e.g. "under 2000") when the customer only
     gave a budget; the whole catalogue is considered.
 
-    Returns name, manufacturer, description, category, selling price, live
-    stock across active/approved seller offers, and average review rating.
+    Returns up to five products at a time — name, manufacturer, description,
+    category, selling price, live stock across active/approved seller offers,
+    and average review rating — followed by a note saying how many products
+    matched in total when there are more than one page of them. When the
+    customer asks for more, or for different suggestions, call this again with
+    the same query plus "page 2" (then "page 3", and so on) to get the next
+    five; never repeat the products you have already shown them.
     """
     # Deliberately a single-string schema. The declared max_price/min_price
     # parameters were rejected at the SDK's argument-validation layer in
@@ -325,10 +388,12 @@ def search_products(query: str) -> str:
     return search_products_impl(query)
 
 
-def search_products_impl(query: str, max_price: Optional[float] = None, min_price: Optional[float] = None) -> str:
-    """search_products with explicit price bounds — kept callable for tests
-    and any future caller with a schema layer that can deliver them safely.
-    Explicit bounds override any budget found in the text."""
+def search_products_impl(query: str, max_price: Optional[float] = None,
+                         min_price: Optional[float] = None,
+                         page: Optional[int] = None) -> str:
+    """search_products with explicit price bounds and page — kept callable for
+    tests and any future caller with a schema layer that can deliver them
+    safely. Explicit values override anything found in the text."""
     # Gemini has been observed sending numeric arguments as strings. Postgres
     # has no numeric <= text operator, so coerce here rather than letting the
     # database turn a valid budget into an error.
@@ -339,6 +404,8 @@ def search_products_impl(query: str, max_price: Optional[float] = None, min_pric
         return "Error: max_price and min_price must be numbers (rupees)."
     if max_price is None and min_price is None:
         max_price, min_price = parse_budget(query)
+    page = parse_page(query) if page is None else max(1, min(int(page), _MAX_PAGE))
+    offset = (page - 1) * PAGE_SIZE
     conn = get_db_connection()
     if not conn: return "Error: Could not connect to database."
     has_price_bound = max_price is not None or min_price is not None
@@ -385,21 +452,45 @@ def search_products_impl(query: str, max_price: Optional[float] = None, min_pric
     if min_price is not None:
         price_where.append('t.price >= %s')
         params.append(min_price)
-    sql = f'SELECT * FROM ({inner_sql}) t '
+    # COUNT(*) OVER () is computed after the price filter and before LIMIT, so
+    # it is the real size of the result the customer asked about. Without it a
+    # truncated page is indistinguishable from the whole catalogue, and the
+    # assistant told customers "these are all the items under 2000" while 30
+    # of them qualified.
+    sql = f'SELECT t.*, COUNT(*) OVER () AS total_matches FROM ({inner_sql}) t '
     if price_where:
         sql += 'WHERE ' + ' AND '.join(price_where) + ' '
     # Was ORDER BY cp.name: a search for "Naruto" returned the first
     # five figures alphabetically, so the assistant recommended
     # whatever sorted earliest -- often out of stock -- instead of the
     # best thing we can actually sell. Now: closest match to what was
-    # asked, then in-stock, then well-reviewed.
-    sql += 'ORDER BY t.match_score DESC, t.stock DESC, t.avg_rating DESC, t.name LIMIT 5'
+    # asked, then in-stock, then well-reviewed. The slug breaks the last
+    # tie: OFFSET only pages cleanly over a total order, otherwise page 2
+    # can repeat or skip whatever the database felt like ordering first.
+    sql += (
+        'ORDER BY t.match_score DESC, t.stock DESC, t.avg_rating DESC, t.name, t.slug '
+        # Literal integers, never parameters: both are ints this function
+        # computed, and the existing price bounds are the trailing params.
+        f'LIMIT {PAGE_SIZE} OFFSET {offset}'
+    )
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, tuple(params))
-            rows = _normalize_product_rows(cur.fetchall())
+            raw = cur.fetchall()
+            # Absent only if something ever selects these columns without the
+            # window count; then "as many as we returned" is the honest total
+            # and no truncation note is emitted.
+            total = int(raw[0].get('total_matches') or 0) if raw else 0
+            total = max(total, offset + len(raw))
+            rows = _normalize_product_rows(raw)
             if rows:
-                return str(rows)
+                return str(rows) + _more_results_note(page, offset + len(rows), total, query)
+            if page > 1:
+                return (
+                    f"There is no page {page}: the earlier pages already listed every "
+                    "product matching that search. Tell the customer that is the whole "
+                    "list, and offer to search for something else."
+                )
             if match_all:
                 return "No products found in that price range."
             if has_price_bound:

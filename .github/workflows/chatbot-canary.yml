@@ -48,4 +48,30 @@ jobs:
             echo "::error::Policy answer does not match the published policy"; fail=1
           fi
 
+          echo "── Q4: \"suggest me more\" must move past the first five ──"
+          # search_products returned its first five rows and said nothing about
+          # the 25 others, so every follow-up produced the same five products
+          # and the assistant told customers that was the whole catalogue under
+          # ₹2000. Asking for more has to surface something new.
+          raw1=$(curl -sS -X POST https://yukizi.com/api/chatbot/chat \
+            -H 'Content-Type: application/json' \
+            -H "x-visitor-id: canary-${GITHUB_RUN_ID}" --max-time 120 \
+            -d '{"message": "suggest me items below 2000", "history": []}')
+          seen=$(echo "$raw1" | jq -c '[.products[]?.name]')
+          said=$(echo "$raw1" | jq -r '.response // ""')
+          more=$(jq -n --arg a "$said" '{message: "suggest me more",
+            history: [{role: "user", content: "suggest me items below 2000"},
+                      {role: "model", content: $a}]}')
+          raw2=$(curl -sS -X POST https://yukizi.com/api/chatbot/chat \
+            -H 'Content-Type: application/json' \
+            -H "x-visitor-id: canary-${GITHUB_RUN_ID}" --max-time 120 \
+            -d "$more")
+          echo "$raw2" | jq -r '.response // ""'
+          fresh=$(echo "$raw2" | jq -r --argjson seen "$seen" \
+            '([.products[]?.name] - $seen) | length')
+          echo "already shown: $seen — new this turn: ${fresh:-0}"
+          if [ "${fresh:-0}" -lt 1 ]; then
+            echo "::error::\"suggest me more\" returned no product the customer had not already seen"; fail=1
+          fi
+
           exit $fail
