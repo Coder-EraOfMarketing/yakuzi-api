@@ -14,6 +14,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { KeywordType, SeoEntityType, SeoNotFoundStatus } from '@prisma/client';
+import { AI_WRITE_KINDS, type AiWriteKind } from '../chatbot/chatbot.service';
 
 /**
  * One FAQ row. A real class, not an inline `{ question, answer }` type.
@@ -394,4 +395,13 @@ export class GenerateAiSummaryDto {
   @Min(20)
   @Max(120)
   maxWords?: number;
+
+  /**
+   * Which field to draft. Absent means the AI summary, which is all this
+   * endpoint did originally — so an admin deployed before the other kinds
+   * existed keeps working.
+   */
+  @IsOptional()
+  @IsIn(AI_WRITE_KINDS as unknown as string[])
+  kind?: AiWriteKind;
 }
