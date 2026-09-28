@@ -163,7 +163,9 @@ export class BlogAdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get all blog categories' })
   async getAllCategories() {
-    const data = await this.blogService.getAllCategories();
+    // Drafts counted too: deleteCategory refuses on any post, so a count that
+    // hid drafts offered the admin a delete the API would then reject.
+    const data = await this.blogService.getAllCategories(true);
     return { message: 'Categories retrieved successfully', data };
   }
 

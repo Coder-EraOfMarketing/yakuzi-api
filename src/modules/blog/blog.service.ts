@@ -544,11 +544,25 @@ export class BlogService {
     }
   }
 
-  async getAllCategories() {
+  /**
+   * @param countAllPosts count drafts too.
+   *
+   * The public storefront wants the published count — a category listing page
+   * showing "4 posts" and then rendering one is wrong. An admin needs the
+   * total, because deleteCategory below refuses on ANY post, drafts included:
+   * with the published-only count, a category holding three drafts reported
+   * "0 posts", the admin panel offered a delete button for it, and the API
+   * then rejected the delete it had just invited.
+   */
+  async getAllCategories(countAllPosts = false) {
     return this.prisma.blogCategory.findMany({
       include: {
         _count: {
-          select: { posts: { where: { status: BlogStatus.PUBLISHED } } },
+          select: {
+            posts: countAllPosts
+              ? true
+              : { where: { status: BlogStatus.PUBLISHED } },
+          },
         },
       },
       orderBy: { name: 'asc' },
