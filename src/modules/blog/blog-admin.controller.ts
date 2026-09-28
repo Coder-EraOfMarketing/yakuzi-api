@@ -65,13 +65,10 @@ export class BlogAdminController {
     return { message: 'Blog posts retrieved successfully', data };
   }
 
-  @Get(':id')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Get a blog post by ID' })
-  async getPostById(@Param('id', ParseUUIDPipe) id: string) {
-    const data = await this.blogService.adminGetPostById(id);
-    return { message: 'Blog post retrieved successfully', data };
-  }
+  // NOTE: `@Get(':id')` is declared at the BOTTOM of this controller, not
+  // here. Nest matches routes in declaration order, and a single-segment
+  // wildcard placed above the static routes swallows them — see the comment
+  // there.
 
   @Put(':id')
   @HttpCode(HttpStatus.OK)
@@ -187,5 +184,31 @@ export class BlogAdminController {
   async deleteCategory(@Param('id', ParseUUIDPipe) id: string) {
     const data = await this.blogService.deleteCategory(id);
     return { message: 'Category deleted successfully', data };
+  }
+
+  // ──────────────────────────────────────────────
+  // CATCH-ALL — must stay last
+  // ──────────────────────────────────────────────
+
+  /**
+   * Nest matches routes in declaration order, so a single-segment `:id`
+   * pattern swallows every static sibling declared after it.
+   *
+   * This handler used to sit under the blog-post routes, above `authors` and
+   * `categories`. `GET /admin/blogs/authors` therefore matched HERE with
+   * id="authors", ParseUUIDPipe rejected it, and the admin got a 400 — so the
+   * author and category dropdowns in the blog editor were empty from the day
+   * they shipped. Creating one worked (POST has no such collision) and then
+   * refetching the list failed, which read as "it did nothing": the same
+   * author was created four times before anyone looked at the database.
+   *
+   * Anything added below this line is unreachable. Add static routes above.
+   */
+  @Get(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get a blog post by ID' })
+  async getPostById(@Param('id', ParseUUIDPipe) id: string) {
+    const data = await this.blogService.adminGetPostById(id);
+    return { message: 'Blog post retrieved successfully', data };
   }
 }
