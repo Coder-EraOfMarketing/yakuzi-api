@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { UpsertSeoMetaDto } from './seo.dto';
+import { GenerateAiSummaryDto, UpsertSeoMetaDto } from './seo.dto';
 
 /**
  * These run the body through the SAME transform options main.ts gives the
@@ -55,5 +55,35 @@ describe('UpsertSeoMetaDto', () => {
 
     expect(dto.secondaryKeywords).toEqual(['helmet', 'ironman']);
     expect(dto.imageAltOverrides).toEqual({ 'a.jpg': 'Iron Man helmet' });
+  });
+});
+
+describe('GenerateAiSummaryDto', () => {
+  const parseSummary = (body: Record<string, unknown>) =>
+    plainToInstance(GenerateAiSummaryDto, body, PIPE_OPTIONS);
+
+  const ARTICLE = '<p>Collectors in India buy figures to display them.</p>';
+
+  it('accepts a post body with no title and no word limit', () => {
+    const dto = parseSummary({ content: ARTICLE });
+
+    expect(validateSync(dto)).toHaveLength(0);
+    expect(dto.content).toBe(ARTICLE);
+  });
+
+  it('rejects an empty body — there is nothing to summarise', () => {
+    expect(validateSync(parseSummary({ content: '' }))).not.toHaveLength(0);
+  });
+
+  it('rejects a word limit outside what a summary can be', () => {
+    expect(validateSync(parseSummary({ content: ARTICLE, maxWords: 5 }))).not.toHaveLength(0);
+    expect(validateSync(parseSummary({ content: ARTICLE, maxWords: 5000 }))).not.toHaveLength(0);
+  });
+
+  it('coerces the word limit the way the global pipe does', () => {
+    const dto = parseSummary({ content: ARTICLE, maxWords: '45' });
+
+    expect(dto.maxWords).toBe(45);
+    expect(validateSync(dto)).toHaveLength(0);
   });
 });

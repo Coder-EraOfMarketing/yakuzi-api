@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -364,4 +365,33 @@ export class RecordNotFoundDto {
 export class UpdateNotFoundStatusDto {
   @IsEnum(SeoNotFoundStatus)
   status!: SeoNotFoundStatus;
+}
+
+/**
+ * Admin: draft the `aiSummary` for a piece of content.
+ *
+ * `content` is the rich-text editor's HTML, sent as stored — the sidecar
+ * strips it, so the model reads exactly the text a reader sees. Nothing is
+ * persisted by this call; the admin edits the draft and saves it with the
+ * rest of the SeoMeta record.
+ */
+export class GenerateAiSummaryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  title?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  // A long-form post with images can legitimately be large; the sidecar
+  // truncates what it actually sends to the model.
+  @MaxLength(200000)
+  content!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(20)
+  @Max(120)
+  maxWords?: number;
 }
