@@ -88,3 +88,60 @@ describe('ChatbotService.summarize', () => {
     );
   });
 });
+
+describe('ChatbotService.aiWrite', () => {
+  const build = () =>
+    new ChatbotService({ get: () => undefined } as never, {} as never);
+
+  const ARTICLE = '<p>Collectors in India buy figures to display them.</p>';
+
+  beforeEach(() => {
+    mockedPost.mockReset();
+    delete process.env.CHATBOT_API_URL;
+  });
+
+  it('passes the requested kind through to the sidecar', async () => {
+    mockedPost.mockResolvedValue({ data: { text: 'A description.' } } as never);
+
+    await build().aiWrite({ content: ARTICLE, kind: 'meta_description' });
+
+    expect(mockedPost.mock.calls[0][1]).toMatchObject({ kind: 'meta_description' });
+  });
+
+  it('defaults to the summary, which is all this used to do', async () => {
+    mockedPost.mockResolvedValue({ data: { text: 'A summary.' } } as never);
+
+    await build().aiWrite({ content: ARTICLE });
+
+    expect(mockedPost.mock.calls[0][1]).toMatchObject({ kind: 'summary' });
+  });
+
+  it('returns keywords as a list of strings', async () => {
+    mockedPost.mockResolvedValue({
+      data: { text: 'a, b', keywords: ['a', 'b', 42] },
+    } as never);
+
+    const result = await build().aiWrite({ content: ARTICLE, kind: 'keywords' });
+
+    expect(result.keywords).toEqual(['a', 'b']);
+  });
+
+  it('reads the old `summary` field from a sidecar that has not redeployed', async () => {
+    // The API and the Python sidecar ship together but reload separately;
+    // one request landing on the old one must not look like a failure.
+    mockedPost.mockResolvedValue({ data: { summary: 'Old shape.' } } as never);
+
+    await expect(build().aiWrite({ content: ARTICLE })).resolves.toMatchObject({
+      text: 'Old shape.',
+      keywords: [],
+    });
+  });
+
+  it('names the field in the error an admin sees', async () => {
+    mockedPost.mockRejectedValue({ message: 'connect ECONNREFUSED' });
+
+    await expect(
+      build().aiWrite({ content: ARTICLE, kind: 'meta_description' }),
+    ).rejects.toThrow(/meta description/);
+  });
+});

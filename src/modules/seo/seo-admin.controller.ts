@@ -149,6 +149,26 @@ export class AdminSeoController {
     return { message: 'Summary generated successfully', data: { summary } };
   }
 
+  /**
+   * Draft any one of the post's SEO fields — summary, meta description,
+   * excerpt or keywords — from its content, without saving.
+   *
+   * Same contract as ai-summary above, which stays because an admin build is
+   * already calling it: the editor shows the result as an editable draft and
+   * the admin saves it, so nothing reaches a reader unread.
+   */
+  @Post('ai-write')
+  @HttpCode(HttpStatus.OK)
+  async aiWrite(@Body() dto: GenerateAiSummaryDto) {
+    const { text, keywords } = await this.chatbotService.aiWrite({
+      title: dto.title,
+      content: dto.content,
+      maxWords: dto.maxWords,
+      kind: dto.kind,
+    });
+    return { message: 'Draft generated successfully', data: { text, keywords } };
+  }
+
   // ── redirects ─────────────────────────────────────────────
 
   @Get('redirects')

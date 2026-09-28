@@ -21,6 +21,23 @@ const SIDECAR_CHAT_TIMEOUT_MS = 110000;
 /** One short generation off a truncated article — nothing like a chat turn. */
 const SIDECAR_SUMMARY_TIMEOUT_MS = 60000;
 
+/** The SEO fields the blog editor can draft from a post's content. */
+export const AI_WRITE_KINDS = [
+  'summary',
+  'meta_description',
+  'excerpt',
+  'keywords',
+] as const;
+export type AiWriteKind = (typeof AI_WRITE_KINDS)[number];
+
+/** What to call each one in a message an admin reads. */
+const AI_WRITE_LABELS: Record<AiWriteKind, string> = {
+  summary: 'summary',
+  meta_description: 'meta description',
+  excerpt: 'excerpt',
+  keywords: 'keywords',
+};
+
 @Injectable()
 export class ChatbotService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ChatbotService.name);
@@ -228,8 +245,25 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
     content: string;
     maxWords?: number;
   }): Promise<string> {
+    return (await this.aiWrite(input)).text;
+  }
+
+  /**
+   * Draft one SEO field from a post's content: the AI summary, the meta
+   * description, the excerpt or the keywords. Each is published somewhere
+   * different, so the sidecar asks for each one differently and enforces its
+   * own limits — this is a single call rather than four because the article
+   * handling, the timeouts and the failure modes are identical.
+   */
+  async aiWrite(input: {
+    title?: string;
+    content: string;
+    maxWords?: number;
+    kind?: AiWriteKind;
+  }): Promise<{ text: string; keywords: string[] }> {
     const apiUrl =
       process.env.CHATBOT_API_URL || `http://127.0.0.1:${this.port}`;
+    const kind = input.kind ?? 'summary';
     try {
       const response = await axios.post(
         `${apiUrl}/summarize`,
@@ -237,15 +271,20 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
           title: input.title ?? '',
           content: input.content,
           max_words: input.maxWords,
+          kind,
         },
         { timeout: SIDECAR_SUMMARY_TIMEOUT_MS },
       );
-      const summary =
-        typeof response.data?.summary === 'string'
-          ? response.data.summary.trim()
-          : '';
-      if (!summary) throw new Error('sidecar returned an empty summary');
-      return summary;
+      // `text` is what the sidecar returns now; `summary` is the field it
+      // shipped with, read as a fallback so this works against a sidecar that
+      // has not been redeployed yet.
+      const raw = response.data?.text ?? response.data?.summary;
+      const text = typeof raw === 'string' ? raw.trim() : '';
+      const keywords = Array.isArray(response.data?.keywords)
+        ? response.data.keywords.filter((k: unknown) => typeof k === 'string')
+        : [];
+      if (!text) throw new Error(`sidecar returned nothing for ${kind}`);
+      return { text, keywords };
     } catch (err) {
       // "Not enough content to summarise" is the admin's problem to fix, not
       // an outage — pass it back as a 400 with the sidecar's own wording.
@@ -254,9 +293,9 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
       if (status === 400 && typeof detail === 'string') {
         throw new BadRequestException(detail);
       }
-      this.logger.error(`AI summary generation failed: ${err.message}`);
+      this.logger.error(`AI ${kind} generation failed: ${err.message}`);
       throw new ServiceUnavailableException(
-        'Could not write a summary right now. Please try again in a moment.',
+        `Could not write the ${AI_WRITE_LABELS[kind]} right now. Please try again in a moment.`,
       );
     }
   }

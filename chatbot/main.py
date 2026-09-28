@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from html import unescape as html_unescape
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
 import base64
 import json
 import uvicorn
@@ -111,15 +111,19 @@ class ConversationTrainRequest(BaseModel):
 
 
 class SummarizeRequest(BaseModel):
-    """A blog post the admin wants an AI-search summary for.
+    """A blog post, and which field the admin wants drafted from it.
 
     `content` is the rich-text editor's HTML, exactly as it is stored — the
     caller should not have to strip it, and stripping it in one place keeps
     the text the model sees identical to the text a reader sees.
+
+    `kind` defaults to the summary this endpoint originally only did, so an
+    admin build deployed before the other kinds existed keeps working.
     """
     title: Optional[str] = ""
     content: str
     max_words: Optional[int] = 60
+    kind: Literal['summary', 'meta_description', 'excerpt', 'keywords'] = 'summary'
 
 
 # ==========================================
@@ -851,15 +855,105 @@ def clean_summary(text: str) -> str:
     return re.sub(r'\s+', ' ', out).strip()
 
 
+# What each field is allowed to be, in characters. A meta description longer
+# than this is truncated by Google mid-sentence; an excerpt is a card on the
+# blog index, so it has a little more room.
+_FIELD_LIMITS = {'meta_description': 160, 'excerpt': 300}
+_MAX_KEYWORDS = 12
+
+
+def clip_to(text: str, limit: int) -> str:
+    """`text` shortened to `limit`, on a word boundary where one exists.
+
+    A description cut mid-word reads as broken in a search result, and Google
+    truncates on its own anyway — better to end on a whole word than to hand
+    it something it will chop.
+    """
+    text = (text or '').strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(' ')
+    # A single word longer than the limit has to be cut somewhere.
+    return (cut[:space] if space > limit // 2 else cut).rstrip(' ,;:.-')
+
+
+def split_keywords(text: str) -> list:
+    """The keywords in whatever shape the model returned them.
+
+    Asked for a comma-separated line, models still answer with bullets or a
+    numbered list often enough that parsing only commas loses the lot.
+    Lowercased and de-duplicated: "Anime Figures" and "anime figures" are one
+    keyword, and repeating it in a meta tag says nothing twice.
+    """
+    out, seen = [], set()
+    for raw in re.split(r'[,;\n]+', text or ''):
+        item = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', raw)
+        item = re.sub(r'[*_`#]', '', item).strip().strip('"\'').lower()
+        item = re.sub(r'\s+', ' ', item)
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out[:_MAX_KEYWORDS]
+
+
+def _write_prompt(kind: str, title: str, article: str, max_words: int) -> str:
+    """The instruction for one field. Each is published somewhere different,
+    so each is asked for differently rather than trimmed from one answer."""
+    header = f"Title: {title or '(untitled)'}\n\nArticle:\n{article}"
+    if kind == 'meta_description':
+        return (
+            "Write the meta description for the article below — the sentence "
+            "shown under the title in Google results.\n"
+            "Rules:\n"
+            "- At most 155 characters, one or two plain sentences.\n"
+            "- Say what the reader gets from the article, concretely.\n"
+            "- No clickbait, no 'in this article', no markdown, no quotes.\n"
+            "- Reply with the description only.\n\n" + header
+        )
+    if kind == 'excerpt':
+        return (
+            "Write the excerpt for the article below — the short summary shown "
+            "on the blog index card.\n"
+            "Rules:\n"
+            "- Two sentences at most, under 300 characters.\n"
+            "- Factual and specific; it is a preview, not a teaser.\n"
+            "- No markdown, no quotes, no 'read on to find out'.\n"
+            "- Reply with the excerpt only.\n\n" + header
+        )
+    if kind == 'keywords':
+        return (
+            "List the search keywords for the article below.\n"
+            "Rules:\n"
+            "- Between five and eight, comma-separated on one line.\n"
+            "- Phrases a person would actually type into a search box.\n"
+            "- Specific to this article; no generic single words, no hashtags.\n"
+            "- Lower case. Reply with the list only.\n\n" + header
+        )
+    return (
+        "Write a factual summary of the article below for AI search engines "
+        "(ChatGPT, Gemini, Perplexity) and for a store's llms.txt listing.\n"
+        "Rules:\n"
+        "- Plain declarative statements about what the article says.\n"
+        "- No marketing language, no first person, no questions, no markdown.\n"
+        "- State the article's main conclusions, so the summary is useful on "
+        "its own to someone who never opens the page.\n"
+        f"- At most {max_words} words. Reply with the summary only.\n\n" + header
+    )
+
+
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
-    """A factual summary of one blog post, written for AI search engines.
+    """Draft one SEO field from a blog post — nothing is persisted here.
 
-    The admin's blog editor drafts `aiSummary` with this; the storefront then
-    publishes that text on the post and as the post's one-line entry in
-    llms.txt, so what an assistant quotes about an article is something the
-    store actually wrote rather than whatever the crawler chose to extract.
-    Nothing is persisted here — the caller saves the draft after editing it.
+    The admin's blog editor uses this for the AI summary, the meta
+    description, the excerpt and the keywords. Each is published somewhere
+    different — the summary goes on the post and into llms.txt, the
+    description into a search result — so each gets its own instruction and
+    its own limits rather than one answer trimmed four ways.
+
+    Everything comes back as an editable draft: the admin reads it before it
+    is saved, and the caller is what persists it.
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not HAS_GEMINI or not api_key:
@@ -869,42 +963,46 @@ def summarize(req: SummarizeRequest):
     if len(article) < _SUMMARY_MIN_CHARS:
         raise HTTPException(
             status_code=400,
-            detail="There is not enough content in this post to summarise yet.",
+            detail="There is not enough content in this post to work from yet.",
         )
     max_words = max(20, min(int(req.max_words or 60), _SUMMARY_MAX_WORDS))
     title = (req.title or '').strip()
-
-    prompt = (
-        "Write a factual summary of the article below for AI search engines "
-        "(ChatGPT, Gemini, Perplexity) and for a store's llms.txt listing.\n"
-        "Rules:\n"
-        "- Plain declarative statements about what the article says.\n"
-        "- No marketing language, no first person, no questions, no markdown.\n"
-        "- State the article's main conclusions, so the summary is useful on "
-        "its own to someone who never opens the page.\n"
-        f"- At most {max_words} words. Reply with the summary only.\n\n"
-        f"Title: {title or '(untitled)'}\n\n"
-        f"Article:\n{article}"
-    )
+    kind = req.kind or 'summary'
+    prompt = _write_prompt(kind, title, article, max_words)
 
     try:
         client = get_genai_client(api_key)
         # No GenerateContentConfig: the sidecar's pinned google-genai has
         # dropped fields off config objects before (see search_products), and
-        # a plain-text summary needs nothing from it.
+        # plain text needs nothing from it.
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
         )
-        summary = clean_summary(getattr(response, 'text', '') or '')
-        if not summary:
-            raise ValueError("Gemini returned an empty summary")
-        return {"summary": summary, "words": len(summary.split())}
+        raw = getattr(response, 'text', '') or ''
+        # Keywords are parsed BEFORE clean_summary, which flattens newlines
+        # into spaces for prose — that turns a bulleted reply into one long
+        # line and loses every item boundary the model gave us.
+        keywords = split_keywords(raw) if kind == 'keywords' else []
+        text = ', '.join(keywords) if kind == 'keywords' else clean_summary(raw)
+        if not text:
+            raise ValueError(f"Gemini returned nothing usable for {kind}")
+        if kind in _FIELD_LIMITS:
+            text = clip_to(text, _FIELD_LIMITS[kind])
+        # `summary` is the field name this endpoint shipped with, kept beside
+        # `text` so an admin deployed before the other kinds keeps working
+        # through the rollout.
+        return {
+            "text": text,
+            "summary": text,
+            "keywords": keywords,
+            "words": len(text.split()),
+        }
     except HTTPException:
         raise
     except Exception as e:
-        print(f"summarize failed: {e}", file=sys.stderr)
-        raise HTTPException(status_code=500, detail=f"Failed to write a summary: {str(e)}")
+        print(f"summarize ({kind}) failed: {e}", file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"Failed to write the {kind}: {str(e)}")
 
 
 @app.post("/chat")
