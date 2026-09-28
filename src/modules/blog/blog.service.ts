@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { swapPathRedirects } from '../admin/product-slug';
-import { BlogStatus, BlogCategory, BlogAuthor, BlogPost } from '@prisma/client';
+import { Prisma, BlogStatus, BlogCategory, BlogAuthor, BlogPost } from '@prisma/client';
 import {
   CreateBlogPostDto,
   UpdateBlogPostDto,
@@ -17,6 +17,44 @@ import {
   CreateBlogCategoryDto,
   UpdateBlogCategoryDto,
 } from './dto';
+
+/**
+ * Turn a unique-constraint violation on blog_categories into something an
+ * admin can act on.
+ *
+ * Unhandled, Prisma's own message reached the browser verbatim:
+ *
+ *   Invalid `this.prisma.blogCategory.create()` invocation in
+ *   /home/yukizi_deploy/yakuzi-api/src/modules/blog/blog.service.ts:494:37
+ *   491 .replace(/ /g, '-')  …
+ *   Unique constraint failed on the fields: (`name`)
+ *
+ * — which discloses the deployment path and the surrounding source, and still
+ * does not tell the admin that a category by that name already exists.
+ *
+ * Both `name` and `slug` are unique, and they fail for different reasons: two
+ * visibly different names ("Anime News" and "Anime news") collapse to the same
+ * slug, so saying which one collided is the difference between "rename it" and
+ * "it is already there".
+ */
+function duplicateBlogCategory(error: unknown, name: string, slug: string): unknown {
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== 'P2002'
+  ) {
+    return error;
+  }
+  const target = error.meta?.target;
+  const fields = Array.isArray(target) ? target.map(String) : [String(target ?? '')];
+  if (fields.some((f) => f.includes('slug'))) {
+    return new ConflictException(
+      `Another category already uses the URL "${slug}". Give this one a different name or slug.`,
+    );
+  }
+  return new ConflictException(
+    `A category called "${name}" already exists — pick it from the list instead of creating it again.`,
+  );
+}
 
 @Injectable()
 export class BlogService {
@@ -491,12 +529,19 @@ export class BlogService {
         .replace(/ /g, '-')
         .replace(/[^\w-]+/g, '');
 
-    return this.prisma.blogCategory.create({
-      data: {
-        name,
-        slug: finalSlug,
-      },
-    });
+    try {
+      return await this.prisma.blogCategory.create({
+        data: {
+          name,
+          slug: finalSlug,
+        },
+      });
+    } catch (error) {
+      // Both name and slug are @unique. Unhandled, Prisma's own message went
+      // to the browser verbatim — including the deployed source path and the
+      // lines around the call — and told an admin nothing about what to do.
+      throw duplicateBlogCategory(error, name, finalSlug);
+    }
   }
 
   async getAllCategories() {
@@ -516,10 +561,14 @@ export class BlogService {
     });
     if (!existing) throw new NotFoundException('Category not found');
 
-    return this.prisma.blogCategory.update({
-      where: { id },
-      data: dto,
-    });
+    try {
+      return await this.prisma.blogCategory.update({
+        where: { id },
+        data: dto,
+      });
+    } catch (error) {
+      throw duplicateBlogCategory(error, dto.name ?? existing.name, dto.slug ?? existing.slug);
+    }
   }
 
   async deleteCategory(id: string) {
