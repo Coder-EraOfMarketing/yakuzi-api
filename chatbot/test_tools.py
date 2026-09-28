@@ -306,6 +306,122 @@ def test_search_products_returns_no_results_message_when_empty():
     assert "No products found" in result
 
 
+# ── Paging: "suggest me more" must not return the same five products ─────────
+
+def _page_of(n, total, start=0):
+    """n catalogue rows carrying the window count the outer query computes."""
+    return [{
+        "name": f"Product {start + i}", "slug": f"product-{start + i}",
+        "manufacturer": "Banpresto", "price": 250, "description": "",
+        "category": "Figurines", "stock": 9 - i, "avg_rating": 4.0,
+        "image": None, "total_matches": total,
+    } for i in range(n)]
+
+
+def test_search_products_tells_the_model_how_many_more_matched():
+    """A budget question matched 30 products, the tool returned its five, and
+    the assistant told the customer "these are all the items currently
+    available under 2000". The page is truncated silently, so the count and
+    the fact that more exist have to travel back with the rows."""
+    mock_conn, _ = _mock_conn_returning(_page_of(5, total=30))
+    with patch("main.get_db_connection", return_value=mock_conn):
+        result = search_products("suggest me items under 2000")
+    assert "30" in result
+    assert "page 2" in result
+    # The count is a note to the model, not a column on every product.
+    assert "'total_matches'" not in result
+
+
+def test_search_products_adds_no_truncation_note_when_nothing_was_cut():
+    mock_conn, _ = _mock_conn_returning(_page_of(2, total=2))
+    with patch("main.get_db_connection", return_value=mock_conn):
+        result = search_products("naruto")
+    assert "page 2" not in result
+    assert "'total_matches'" not in result
+
+
+def test_search_products_serves_the_next_page_from_page_n_in_the_query():
+    """The follow-up "suggest me more" can only produce new products if the
+    model can ask for the next window. The page travels inside the query text
+    for the same reason the budget does: the production SDK drops every
+    Optional parameter from the declaration."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("items under 2000 page 3")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    assert "LIMIT 5 OFFSET 10" in executed_sql
+
+
+def test_search_products_page_1_is_the_default_and_offsets_nothing():
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("items under 2000")
+    assert "OFFSET 0" in mock_cursor.execute.call_args[0][0]
+
+
+def test_search_products_page_words_never_reach_the_text_filter():
+    """"under 2000 page 2" must still search the whole catalogue by price —
+    if "page" survives as a search token the query becomes ILIKE '%page%'
+    and a budget question suddenly returns nothing."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("suggest me items under 2000 page 2")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    assert "ILIKE" not in executed_sql
+    assert mock_cursor.execute.call_args[0][1] == (2000.0,)
+
+
+def test_search_products_keeps_the_text_filter_when_paging_a_named_search():
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("naruto page 2")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    assert "LIMIT 5 OFFSET 5" in executed_sql
+    assert set(mock_cursor.execute.call_args[0][1]) == {"%naruto%"}
+
+
+def test_search_products_past_the_last_page_says_the_list_is_exhausted():
+    """An empty page 4 is "you have seen everything", not "this store sells
+    nothing" — the model has to be able to tell the two apart."""
+    mock_conn, _ = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        result = search_products("items under 2000 page 4")
+    assert "No products found" not in result
+    assert "page 4" in result
+
+
+def test_search_products_more_phrasing_stays_a_budget_question():
+    """"suggest me more items under 2000" has no product words in it. With
+    "more" left in as a search token it became ILIKE '%more%' and answered a
+    question 30 products qualify for with nothing at all."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("suggest me more items under 2000")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    assert "ILIKE" not in executed_sql
+    assert mock_cursor.execute.call_args[0][1] == (2000.0,)
+
+
+def test_search_products_orders_pages_by_a_total_order():
+    """OFFSET paging repeats and skips products unless the sort is total;
+    match_score/stock/rating/name all tie, the slug never does."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("items under 2000")
+    assert "t.name, t.slug" in mock_cursor.execute.call_args[0][0]
+
+
+def test_search_products_counts_matches_after_the_price_filter():
+    """COUNT(*) OVER () has to sit in the outer query: inside, it would count
+    every text match and report a total the budget excludes."""
+    mock_conn, mock_cursor = _mock_conn_returning([])
+    with patch("main.get_db_connection", return_value=mock_conn):
+        search_products("items under 2000")
+    executed_sql = mock_cursor.execute.call_args[0][0]
+    outer = executed_sql.split("FROM (", 1)[0]
+    assert "COUNT(*) OVER () AS total_matches" in outer
+
+
 from main import search_blogs
 
 
