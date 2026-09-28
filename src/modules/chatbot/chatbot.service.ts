@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleInit,
   OnModuleDestroy,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { exec, spawn, ChildProcess } from 'child_process';
@@ -15,6 +17,9 @@ import { PrismaService } from '../../database/prisma.service';
 /** Storefront aborts its own request at 120s; stay under that so a stalled
  *  sidecar produces a logged server-side error instead of a silent client abort. */
 const SIDECAR_CHAT_TIMEOUT_MS = 110000;
+
+/** One short generation off a truncated article — nothing like a chat turn. */
+const SIDECAR_SUMMARY_TIMEOUT_MS = 60000;
 
 @Injectable()
 export class ChatbotService implements OnModuleInit, OnModuleDestroy {
@@ -207,6 +212,53 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
       );
       this.pythonProcess = null;
     });
+  }
+
+  /**
+   * A factual, AI-search-oriented summary of one blog post.
+   *
+   * Unlike sendMessage this throws rather than degrading: the caller is an
+   * admin pressing "Generate", and the result is published verbatim on the
+   * post and in llms.txt. A paragraph reading "I encountered an issue" saved
+   * as the post's aiSummary and served to crawlers is far worse than an error
+   * the admin can see and retry.
+   */
+  async summarize(input: {
+    title?: string;
+    content: string;
+    maxWords?: number;
+  }): Promise<string> {
+    const apiUrl =
+      process.env.CHATBOT_API_URL || `http://127.0.0.1:${this.port}`;
+    try {
+      const response = await axios.post(
+        `${apiUrl}/summarize`,
+        {
+          title: input.title ?? '',
+          content: input.content,
+          max_words: input.maxWords,
+        },
+        { timeout: SIDECAR_SUMMARY_TIMEOUT_MS },
+      );
+      const summary =
+        typeof response.data?.summary === 'string'
+          ? response.data.summary.trim()
+          : '';
+      if (!summary) throw new Error('sidecar returned an empty summary');
+      return summary;
+    } catch (err) {
+      // "Not enough content to summarise" is the admin's problem to fix, not
+      // an outage — pass it back as a 400 with the sidecar's own wording.
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 400 && typeof detail === 'string') {
+        throw new BadRequestException(detail);
+      }
+      this.logger.error(`AI summary generation failed: ${err.message}`);
+      throw new ServiceUnavailableException(
+        'Could not write a summary right now. Please try again in a moment.',
+      );
+    }
   }
 
   async sendMessage(

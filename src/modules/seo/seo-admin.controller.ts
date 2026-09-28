@@ -21,6 +21,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { AdminAccessGuard } from '../../common/admin-access';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ChatbotService } from '../chatbot/chatbot.service';
 import { SeoService } from './seo.service';
 import { SeoRedirectsService } from './seo-redirects.service';
 import { SeoKeywordsService } from './seo-keywords.service';
@@ -37,6 +38,7 @@ import {
   BulkCreateRedirectsDto,
   BulkRedirectIdsDto,
   UpdateNotFoundStatusDto,
+  GenerateAiSummaryDto,
 } from './seo.dto';
 
 function parseEntityType(value: string): SeoEntityType {
@@ -58,6 +60,7 @@ export class AdminSeoController {
     private readonly keywordsService: SeoKeywordsService,
     private readonly notFoundService: SeoNotFoundService,
     private readonly imageRenameService: ImageRenameService,
+    private readonly chatbotService: ChatbotService,
   ) {}
 
   // ── product URL slug ──────────────────────────────────────
@@ -126,6 +129,24 @@ export class AdminSeoController {
   ) {
     const data = await this.seoService.restoreRevision(id, revisionId, userId);
     return { message: 'Revision restored successfully', data };
+  }
+
+  /**
+   * Draft the AI-search summary for a post, without saving anything.
+   *
+   * The editor shows it as an editable draft and saves it with the rest of
+   * the SeoMeta record, so nothing reaches a reader that an admin has not
+   * read first — the same contract as the chatbot's rule extraction.
+   */
+  @Post('ai-summary')
+  @HttpCode(HttpStatus.OK)
+  async generateAiSummary(@Body() dto: GenerateAiSummaryDto) {
+    const summary = await this.chatbotService.summarize({
+      title: dto.title,
+      content: dto.content,
+      maxWords: dto.maxWords,
+    });
+    return { message: 'Summary generated successfully', data: { summary } };
   }
 
   // ── redirects ─────────────────────────────────────────────

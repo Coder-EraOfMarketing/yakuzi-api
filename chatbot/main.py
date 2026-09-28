@@ -4,6 +4,7 @@ import sys
 import time
 import traceback
 from contextvars import ContextVar
+from html import unescape as html_unescape
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -107,6 +108,18 @@ class ChatRequest(BaseModel):
 class ConversationTrainRequest(BaseModel):
     history: List[ChatMessage]
     custom_name: Optional[str] = "yukizi-custom-bot"
+
+
+class SummarizeRequest(BaseModel):
+    """A blog post the admin wants an AI-search summary for.
+
+    `content` is the rich-text editor's HTML, exactly as it is stored — the
+    caller should not have to strip it, and stripping it in one place keeps
+    the text the model sees identical to the text a reader sees.
+    """
+    title: Optional[str] = ""
+    content: str
+    max_words: Optional[int] = 60
 
 
 # ==========================================
@@ -795,6 +808,104 @@ def extract_rule(req: ConversationTrainRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to extract rule: {str(e)}")
+
+# The article the model is asked to summarise. Long enough for any real post's
+# argument to be present, short enough that a runaway paste cannot blow the
+# request up or bill a summary of 200k characters.
+_SUMMARY_INPUT_CHARS = 12000
+_SUMMARY_MIN_CHARS = 40
+_SUMMARY_MAX_WORDS = 120
+
+
+def html_to_text(html: str) -> str:
+    """The visible text of a rich-text post.
+
+    Block boundaries become newlines first: dropping tags naively welds the
+    last word of one paragraph to the first of the next ("…display.Prices
+    start…"), and the model then summarises a run-on sentence it invented.
+    Entities are unescaped so the model reads ₹250, not &#8377;250.
+    """
+    text = re.sub(r'(?is)<(script|style)[^>]*>.*?</\1\s*>', ' ', html or '')
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = re.sub(r'(?i)</(p|div|li|tr|h[1-6]|blockquote|figcaption)\s*>', '\n', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html_unescape(text)
+    text = re.sub(r'[ \t\r\f\v]+', ' ', text)
+    text = re.sub(r'\s*\n\s*', '\n', text)
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
+
+
+def clean_summary(text: str) -> str:
+    """What the model returned, as the plain sentence it was asked for.
+
+    The summary is published verbatim — on the post and in llms.txt — so a
+    stray "**Summary:**" or a wrapping quote would be shown to readers and
+    served to crawlers exactly as written.
+    """
+    out = (text or '').strip()
+    out = re.sub(r'^```[a-z]*\s*|\s*```$', '', out).strip()
+    out = re.sub(r'^["“\']+|["”\']+$', '', out).strip()
+    out = re.sub(r'^(?:\*\*|__)?\s*(?:summary|tl;?dr)\s*:?\s*(?:\*\*|__)?\s*', '', out, flags=re.IGNORECASE)
+    out = re.sub(r'[*_#`]', '', out)
+    out = re.sub(r'^["“\']+|["”\']+$', '', out).strip()
+    return re.sub(r'\s+', ' ', out).strip()
+
+
+@app.post("/summarize")
+def summarize(req: SummarizeRequest):
+    """A factual summary of one blog post, written for AI search engines.
+
+    The admin's blog editor drafts `aiSummary` with this; the storefront then
+    publishes that text on the post and as the post's one-line entry in
+    llms.txt, so what an assistant quotes about an article is something the
+    store actually wrote rather than whatever the crawler chose to extract.
+    Nothing is persisted here — the caller saves the draft after editing it.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not HAS_GEMINI or not api_key:
+        raise HTTPException(status_code=500, detail="Gemini SDK/API Key not configured.")
+
+    article = html_to_text(req.content)[:_SUMMARY_INPUT_CHARS]
+    if len(article) < _SUMMARY_MIN_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="There is not enough content in this post to summarise yet.",
+        )
+    max_words = max(20, min(int(req.max_words or 60), _SUMMARY_MAX_WORDS))
+    title = (req.title or '').strip()
+
+    prompt = (
+        "Write a factual summary of the article below for AI search engines "
+        "(ChatGPT, Gemini, Perplexity) and for a store's llms.txt listing.\n"
+        "Rules:\n"
+        "- Plain declarative statements about what the article says.\n"
+        "- No marketing language, no first person, no questions, no markdown.\n"
+        "- State the article's main conclusions, so the summary is useful on "
+        "its own to someone who never opens the page.\n"
+        f"- At most {max_words} words. Reply with the summary only.\n\n"
+        f"Title: {title or '(untitled)'}\n\n"
+        f"Article:\n{article}"
+    )
+
+    try:
+        client = get_genai_client(api_key)
+        # No GenerateContentConfig: the sidecar's pinned google-genai has
+        # dropped fields off config objects before (see search_products), and
+        # a plain-text summary needs nothing from it.
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        summary = clean_summary(getattr(response, 'text', '') or '')
+        if not summary:
+            raise ValueError("Gemini returned an empty summary")
+        return {"summary": summary, "words": len(summary.split())}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"summarize failed: {e}", file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"Failed to write a summary: {str(e)}")
+
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
