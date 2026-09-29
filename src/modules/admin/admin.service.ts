@@ -11,6 +11,7 @@ import slugify from 'slugify';
 import { buildPayoutInputFromOrderItem, calculateSellerPayout } from '../settlements/payout-calculator';
 import { AdminQuerySuggestionsDto } from './dto/query-suggestions.dto';
 import { AdminUpdateProductDto } from './dto/admin-update-product.dto';
+import { UpdateProductDto } from '../products/dto/update-product.dto';
 import { applySlugChange, SlugPrisma } from './product-slug';
 import {
   UserStatus,
@@ -1276,6 +1277,38 @@ export class AdminService {
   ) {
     const { sellerId, ...productDto } = dto;
     return this.productsService.create(sellerId, productDto, adminUserId);
+  }
+
+  /**
+   * Edit a listing exactly as its own seller would.
+   *
+   * The counterpart to adminCreateProductForSeller above, and deliberately
+   * the same shape: it resolves who the listing belongs to and then runs the
+   * seller's own update path as them. Everything that path already handles —
+   * variants, batches and stock, images, pricing and the platform fee,
+   * packaging — therefore behaves identically whether the seller saves it or
+   * an admin does, with no second implementation to drift.
+   *
+   * Note this is NOT adminUpdateProduct: that one edits the catalogue entry
+   * (the shared name, slug and its 301) plus a couple of offer fields. This
+   * one edits the seller's listing. Both exist because they are different
+   * things that happen to live on the same row.
+   */
+  async adminUpdateProductForSeller(
+    productId: string,
+    dto: UpdateProductDto,
+  ) {
+    const offer = await this.prisma.sellerOffer.findFirst({
+      where: { id: productId, deletedAt: null },
+      // SellerOffer.sellerId is the SellerProfile id, while the seller-side
+      // update is keyed by USER id — it looks the profile up itself. Hand it
+      // the user, or it throws "seller profile not found" for a real seller.
+      select: { seller: { select: { userId: true } } },
+    });
+    if (!offer?.seller?.userId) {
+      throw new NotFoundException('Product not found');
+    }
+    return this.productsService.update(offer.seller.userId, productId, dto);
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
