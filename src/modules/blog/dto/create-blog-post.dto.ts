@@ -1,4 +1,5 @@
 import {
+  IsDefined,
   IsString,
   IsOptional,
   IsArray,
@@ -28,7 +29,19 @@ export class CreateBlogPostDto {
   @MaxLength(500)
   excerpt?: string;
 
+  /**
+   * The post body: the rich-text editor's HTML today, an Editor.js JSON
+   * object historically, so the type stays `any`.
+   *
+   * @IsDefined is load-bearing, not decoration. main.ts runs the global pipe
+   * with `whitelist: true, forbidNonWhitelisted: true`, which strips — and
+   * then rejects — any property carrying no class-validator constraint.
+   * @ApiProperty is a Swagger decorator and registers none, so every attempt
+   * to create or update a post was answered with "property content should
+   * not exist" and no post could be written through this API at all.
+   */
   @ApiProperty({ description: 'Editor.js JSON or rich text content' })
+  @IsDefined()
   content: any;
 
   @ApiPropertyOptional({ example: 'https://example.com/image.jpg' })
