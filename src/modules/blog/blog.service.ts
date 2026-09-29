@@ -56,6 +56,50 @@ function duplicateBlogCategory(error: unknown, name: string, slug: string): unkn
   );
 }
 
+/**
+ * The credited authors / filed categories of a post, in byline order, with
+ * the primary first.
+ *
+ * `authorId` and `categoryId` remain the primary of each — the byline's first
+ * name, and the category that owns the post's articleSection — so a caller
+ * that knows nothing about the join tables still reads a correct post. This
+ * normalises whichever the caller sent: a list, a single id, or both.
+ */
+export function orderedIds(
+  list: string[] | undefined,
+  primary: string | null | undefined,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of [primary, ...(list ?? [])]) {
+    const value = typeof id === 'string' ? id.trim() : '';
+    if (value && !seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+/** Rows for a join table, position 0 first. */
+const linkRows = (ids: string[], key: 'authorId' | 'categoryId') =>
+  ids.map((id, position) => ({ [key]: id, position }));
+
+/**
+ * Everything a rendered post needs, in one place so the sets cannot be
+ * included on some reads and missed on others — a byline that shows one
+ * author on the post page and three on the index is worse than no byline.
+ */
+export const POST_INCLUDE = {
+  author: true,
+  category: true,
+  authors: { include: { author: true }, orderBy: { position: 'asc' as const } },
+  categories: {
+    include: { category: true },
+    orderBy: { position: 'asc' as const },
+  },
+};
+
 @Injectable()
 export class BlogService {
   constructor(private readonly prisma: PrismaService) {}
@@ -162,16 +206,24 @@ export class BlogService {
       publishedAt: status === BlogStatus.PUBLISHED ? new Date() : null,
     };
 
-    if (categoryId) {
-      createData.category = { connect: { id: categoryId } };
+    // The primary stays the first of each list, so a post created with
+    // authorIds: [a, b] reads as authored by `a` to anything that only knows
+    // about the scalar column.
+    const authorIds = orderedIds(dto.authorIds, finalAuthorId);
+    const categoryIds = orderedIds(dto.categoryIds, categoryId);
+    const primaryCategoryId = categoryIds[0];
+
+    if (primaryCategoryId) {
+      createData.category = { connect: { id: primaryCategoryId } };
+    }
+    createData.authors = { create: linkRows(authorIds, 'authorId') };
+    if (categoryIds.length) {
+      createData.categories = { create: linkRows(categoryIds, 'categoryId') };
     }
 
     return this.prisma.blogPost.create({
       data: createData,
-      include: {
-        author: true,
-        category: true,
-      },
+      include: POST_INCLUDE,
     });
   }
 
@@ -180,7 +232,11 @@ export class BlogService {
     const skip = (page - 1) * limit;
 
     const where = {
-      ...(categoryId && { categoryId }),
+      // Filed under it primarily OR as an additional category — a post in
+      // two categories must appear under both, or the second is decorative.
+      ...(categoryId && {
+        OR: [{ categoryId }, { categories: { some: { categoryId } } }],
+      }),
       ...(status && { status }),
       ...(search && {
         OR: [
@@ -193,10 +249,7 @@ export class BlogService {
     const [items, total] = await Promise.all([
       this.prisma.blogPost.findMany({
         where,
-        include: {
-          author: true,
-          category: true,
-        },
+        include: POST_INCLUDE,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
@@ -218,10 +271,7 @@ export class BlogService {
   async adminGetPostById(id: string) {
     const post = await this.prisma.blogPost.findUnique({
       where: { id },
-      include: {
-        author: true,
-        category: true,
-      },
+      include: POST_INCLUDE,
     });
 
     if (!post) {
@@ -235,8 +285,38 @@ export class BlogService {
     const existing = await this.prisma.blogPost.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Blog post not found');
 
-    // Not a BlogPost column — consumed here, never persisted.
-    const { status, createRedirect, ...fields } = dto;
+    // None of these are BlogPost columns — consumed here, never persisted.
+    const { status, createRedirect, authorIds, categoryIds, ...fields } = dto;
+
+    // Only rewrite a set the caller actually sent. An update that touches
+    // only the title must not silently strip a post's co-authors.
+    // A list that is sent IS the list. Folding the existing primary back in
+    // would make removing an author impossible, and the editor always sends
+    // the full set. Only an explicitly-sent `authorId`/`categoryId` in the
+    // same request takes first place.
+    const taxonomy: Record<string, unknown> = {};
+    if (authorIds !== undefined) {
+      const ids = orderedIds(authorIds, fields.authorId);
+      if (!ids.length) {
+        throw new BadRequestException('A post needs at least one author');
+      }
+      fields.authorId = ids[0];
+      taxonomy.authors = {
+        deleteMany: {},
+        create: linkRows(ids, 'authorId'),
+      };
+    }
+    if (categoryIds !== undefined) {
+      const ids = orderedIds(categoryIds, fields.categoryId);
+      // A post can legitimately end up with no category: the column is
+      // nullable and the storefront treats it as unfiled. It must not keep
+      // pointing at a category the post is no longer in.
+      fields.categoryId = ids[0] ?? null;
+      taxonomy.categories = {
+        deleteMany: {},
+        create: linkRows(ids, 'categoryId'),
+      };
+    }
 
     let publishedAt = existing.publishedAt;
     if (
@@ -276,8 +356,8 @@ export class BlogService {
         );
         return tx.blogPost.update({
           where: { id },
-          data: { ...fields, status, publishedAt },
-          include: { author: true, category: true },
+          data: { ...fields, ...taxonomy, status, publishedAt },
+          include: POST_INCLUDE,
         });
       });
     }
@@ -286,13 +366,11 @@ export class BlogService {
       where: { id },
       data: {
         ...fields,
+        ...taxonomy,
         status,
         publishedAt,
       },
-      include: {
-        author: true,
-        category: true,
-      },
+      include: POST_INCLUDE,
     });
   }
 
@@ -338,7 +416,11 @@ export class BlogService {
 
     const where = {
       status: BlogStatus.PUBLISHED,
-      ...(categoryId && { categoryId }),
+      // Filed under it primarily OR as an additional category — a post in
+      // two categories must appear under both, or the second is decorative.
+      ...(categoryId && {
+        OR: [{ categoryId }, { categories: { some: { categoryId } } }],
+      }),
       ...(search && {
         OR: [
           { title: { contains: search, mode: 'insensitive' as any } },
@@ -350,10 +432,7 @@ export class BlogService {
     const [items, total] = await Promise.all([
       this.prisma.blogPost.findMany({
         where,
-        include: {
-          author: true,
-          category: true,
-        },
+        include: POST_INCLUDE,
         orderBy: { publishedAt: 'desc' },
         skip,
         take: Number(limit),
@@ -375,10 +454,7 @@ export class BlogService {
   async getTrendingPosts(limit: number = 10) {
     return this.prisma.blogPost.findMany({
       where: { status: BlogStatus.PUBLISHED },
-      include: {
-        author: true,
-        category: true,
-      },
+      include: POST_INCLUDE,
       orderBy: { views: 'desc' },
       take: Number(limit),
     });
@@ -396,10 +472,7 @@ export class BlogService {
     const [items, total] = await Promise.all([
       this.prisma.blogPost.findMany({
         where,
-        include: {
-          author: true,
-          category: true,
-        },
+        include: POST_INCLUDE,
         orderBy: { publishedAt: 'desc' },
         skip,
         take: Number(limit),
@@ -421,10 +494,7 @@ export class BlogService {
   async getPostBySlug(slug: string) {
     const post = await this.prisma.blogPost.findUnique({
       where: { slug },
-      include: {
-        author: true,
-        category: true,
-      },
+      include: POST_INCLUDE,
     });
 
     if (!post || post.status !== BlogStatus.PUBLISHED) {
@@ -503,9 +573,11 @@ export class BlogService {
     const existing = await this.prisma.blogAuthor.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Author not found');
 
-    // Check if author has posts
+    // Any post they are credited on, not just the ones they are primary
+    // author of. The join row cascades on delete, so without this an author
+    // could be removed from three bylines without a word.
     const postCount = await this.prisma.blogPost.count({
-      where: { authorId: id },
+      where: { OR: [{ authorId: id }, { authors: { some: { authorId: id } } }] },
     });
     if (postCount > 0) {
       throw new BadRequestException(
@@ -617,7 +689,7 @@ export class BlogService {
         ...(query.categoryId && { categoryId: query.categoryId }),
         ...(status && { status }),
       },
-      include: { author: true, category: true },
+      include: POST_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -628,7 +700,7 @@ export class BlogService {
         OR: [{ id: idOrSlug }, { slug: idOrSlug }],
         ...(!includeDrafts && { status: BlogStatus.PUBLISHED }),
       },
-      include: { author: true, category: true },
+      include: POST_INCLUDE,
     });
   }
 
