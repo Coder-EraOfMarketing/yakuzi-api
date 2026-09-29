@@ -16,7 +16,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { DiscountType } from '@prisma/client';
+import { DiscountType, BoxCondition } from '@prisma/client';
 
 export class UpdateProductDto {
   @ApiPropertyOptional({ example: 'Paracetamol 500mg', maxLength: 255 })
@@ -45,6 +45,16 @@ export class UpdateProductDto {
   @IsString()
   @IsOptional()
   specifications?: string;
+
+  /**
+   * Optional here, unlike on create: editing an unrelated field such as price
+   * must not force a seller to re-answer a question they already answered.
+   * A value that IS supplied still has to be one of the two.
+   */
+  @ApiPropertyOptional({ enum: BoxCondition, example: BoxCondition.WITH_BOX })
+  @IsEnum(BoxCondition)
+  @IsOptional()
+  boxCondition?: BoxCondition;
 
   @IsString()
   @IsOptional()

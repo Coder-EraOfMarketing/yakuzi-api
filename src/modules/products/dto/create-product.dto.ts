@@ -17,7 +17,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { DiscountType } from '@prisma/client';
+import { DiscountType, BoxCondition } from '@prisma/client';
 
 export class CreateProductDto {
   @ApiProperty({ example: 'Paracetamol 500mg', maxLength: 255 })
@@ -46,6 +46,22 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   specifications?: string;
+
+  /**
+   * Whether the item ships in its original retail box.
+   *
+   * Deliberately NOT optional. The database column is nullable so that a row
+   * written without an answer shows no tag instead of silently claiming
+   * WITH_BOX, which means nothing in the database enforces this — the
+   * decorator below is the enforcement, together with the shared product form.
+   */
+  @ApiProperty({
+    enum: BoxCondition,
+    example: BoxCondition.WITH_BOX,
+    description: 'Required. Whether the item ships in its original retail box.',
+  })
+  @IsEnum(BoxCondition)
+  boxCondition: BoxCondition;
 
   @IsString()
   @IsOptional()
