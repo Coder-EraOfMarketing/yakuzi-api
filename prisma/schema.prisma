@@ -280,6 +280,7 @@ model SellerOffer {
   sku            String?
   serialNo       String?
   specifications String?
+  boxCondition   BoxCondition?
 
   description          String?
   mrp                  Decimal                     @db.Decimal(10, 2)
@@ -1362,6 +1363,18 @@ enum ProductApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+/// Whether a seller ships the item in its original retail box.
+///
+/// Nullable on SellerOffer on purpose. A listing written without an answer
+/// must show NO tag rather than silently claim WITH_BOX — that would be a
+/// specific claim about a physical item, shown to a buyer, that nobody made.
+/// Required-ness is enforced at the boundaries a listing arrives through (the
+/// create DTO and the shared product form), not by the database.
+enum BoxCondition {
+  WITH_BOX
+  WITHOUT_BOX
 }
 
 enum BlogStatus {
