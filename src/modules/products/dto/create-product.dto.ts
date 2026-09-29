@@ -50,18 +50,33 @@ export class CreateProductDto {
   /**
    * Whether the item ships in its original retail box.
    *
-   * Deliberately NOT optional. The database column is nullable so that a row
-   * written without an answer shows no tag instead of silently claiming
-   * WITH_BOX, which means nothing in the database enforces this — the
-   * decorator below is the enforcement, together with the shared product form.
+   * ⚠️ OPTIONAL ON PURPOSE, AND ONLY FOR NOW. The intended end state is
+   * required. It cannot be required yet, because this API and the seller
+   * portal deploy separately and merging means live:
+   *
+   *   - Require it here before the form sends it, and every seller and admin
+   *     product creation 400s until the web deploy lands.
+   *   - Ship the form first, and the global pipe's `forbidNonWhitelisted`
+   *     rejects the unknown property — the same outage from the other side.
+   *
+   * So this lands additive (expand), the form starts sending it and enforces
+   * the choice client-side, and a follow-up flips this to required (contract)
+   * once no live client can omit it. Until that follow-up, "mandatory" is
+   * enforced by `productFormSchema`, which will not let a seller submit
+   * without choosing.
+   *
+   * A value that IS supplied must still be one of the two — a typo or a stale
+   * client sending nonsense is rejected today.
    */
-  @ApiProperty({
+  @ApiPropertyOptional({
     enum: BoxCondition,
     example: BoxCondition.WITH_BOX,
-    description: 'Required. Whether the item ships in its original retail box.',
+    description:
+      'Whether the item ships in its original retail box. Optional only until the seller form ships; becoming required.',
   })
   @IsEnum(BoxCondition)
-  boxCondition: BoxCondition;
+  @IsOptional()
+  boxCondition?: BoxCondition;
 
   @IsString()
   @IsOptional()
