@@ -420,6 +420,7 @@ export class ProductsService {
           sku: normalized.sku ?? undefined,
           serialNo: normalized.serialNo ?? undefined,
           specifications: normalized.specifications ?? undefined,
+          boxCondition: normalized.boxCondition ?? undefined,
           mrp: normalized.mrp,
           gstPercent: normalized.gstPercent,
           isTaxIncluded: normalized.isTaxIncluded ?? false,
@@ -453,6 +454,7 @@ export class ProductsService {
         sku: normalized.sku ?? undefined,
         serialNo: normalized.serialNo ?? undefined,
         specifications: normalized.specifications ?? undefined,
+        boxCondition: normalized.boxCondition ?? undefined,
         mrp: normalized.mrp,
         gstPercent: normalized.gstPercent,
         isTaxIncluded: normalized.isTaxIncluded ?? false,
@@ -1587,6 +1589,11 @@ export class ProductsService {
             discountType: p.discountType,
             discountMeta: p.discountMeta,
             deliveryText: p.deliveryText,
+            // Explicit null rather than undefined, so the field survives JSON
+            // serialisation and the storefront can tell "this listing has no
+            // answer" from "this API is too old to send one". Both render no
+            // tag, but only one of them is worth chasing a seller about.
+            boxCondition: p.boxCondition ?? null,
             gstPercent: p.gstPercent,
             isTaxIncluded: p.isTaxIncluded,
             shippingGstPercent: p.shippingGstPercent,

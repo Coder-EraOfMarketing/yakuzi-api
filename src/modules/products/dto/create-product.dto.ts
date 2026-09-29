@@ -17,7 +17,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { DiscountType } from '@prisma/client';
+import { DiscountType, BoxCondition } from '@prisma/client';
 
 export class CreateProductDto {
   @ApiProperty({ example: 'Paracetamol 500mg', maxLength: 255 })
@@ -46,6 +46,37 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   specifications?: string;
+
+  /**
+   * Whether the item ships in its original retail box.
+   *
+   * ⚠️ OPTIONAL ON PURPOSE, AND ONLY FOR NOW. The intended end state is
+   * required. It cannot be required yet, because this API and the seller
+   * portal deploy separately and merging means live:
+   *
+   *   - Require it here before the form sends it, and every seller and admin
+   *     product creation 400s until the web deploy lands.
+   *   - Ship the form first, and the global pipe's `forbidNonWhitelisted`
+   *     rejects the unknown property — the same outage from the other side.
+   *
+   * So this lands additive (expand), the form starts sending it and enforces
+   * the choice client-side, and a follow-up flips this to required (contract)
+   * once no live client can omit it. Until that follow-up, "mandatory" is
+   * enforced by `productFormSchema`, which will not let a seller submit
+   * without choosing.
+   *
+   * A value that IS supplied must still be one of the two — a typo or a stale
+   * client sending nonsense is rejected today.
+   */
+  @ApiPropertyOptional({
+    enum: BoxCondition,
+    example: BoxCondition.WITH_BOX,
+    description:
+      'Whether the item ships in its original retail box. Optional only until the seller form ships; becoming required.',
+  })
+  @IsEnum(BoxCondition)
+  @IsOptional()
+  boxCondition?: BoxCondition;
 
   @IsString()
   @IsOptional()
