@@ -49,6 +49,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadedFile, UseInterceptors } from '@nestjs/common';
 import { AdminQuerySuggestionsDto } from './dto/query-suggestions.dto';
 import { AdminUpdateProductDto } from './dto/admin-update-product.dto';
+import { UpdateProductDto } from '../products/dto/update-product.dto';
 import { AdminCreateProductDto } from './dto/admin-create-product.dto';
 import { UpdateSuggestionDto } from './dto/update-suggestion.dto';
 import { UpdateSellerProfileDto } from '../sellers/dto/update-seller-profile.dto';
@@ -230,6 +231,29 @@ export class AdminController {
     @Body() dto: AdminUpdateProductDto,
   ) {
     const data = await this.adminService.adminUpdateProduct(id, dto);
+    return { message: 'Product updated successfully', data };
+  }
+
+  /**
+   * Edit a seller's listing on their behalf, with the seller's own form and
+   * the seller's own rules — the counterpart to POST /admin/products, which
+   * creates one.
+   *
+   * Separate from PATCH products/:id above because they edit different
+   * things: that one changes the CATALOGUE entry (shared name, slug, its
+   * 301) plus a couple of offer fields, this one changes the SELLER'S
+   * LISTING — stock, variants, images, pricing, packaging.
+   */
+  @Patch('products/:id/as-seller')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Update a seller's listing on their behalf" })
+  @ApiResponse({ status: 200, description: 'Listing updated' })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async updateProductAsSeller(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateProductDto,
+  ) {
+    const data = await this.adminService.adminUpdateProductForSeller(id, dto);
     return { message: 'Product updated successfully', data };
   }
 
