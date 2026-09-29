@@ -50,6 +50,28 @@ export class CreateBlogPostDto {
   @IsUUID()
   categoryId: string;
 
+  /**
+   * Every credited author, byline order. The first becomes `authorId`, which
+   * stays the primary — so a reader that knows nothing about co-authors still
+   * gets a correct post. Omit to credit `authorId` alone.
+   */
+  @ApiPropertyOptional({ type: [String], example: ['uuid-a', 'uuid-b'] })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  authorIds?: string[];
+
+  /**
+   * Every category the post is filed under. The first becomes `categoryId`,
+   * which stays the one that owns the post's articleSection and its place in
+   * the storefront's category listing.
+   */
+  @ApiPropertyOptional({ type: [String], example: ['uuid-a', 'uuid-b'] })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  categoryIds?: string[];
+
   @ApiPropertyOptional({ example: ['cold', 'medicine', 'india'] })
   @IsOptional()
   @IsArray()

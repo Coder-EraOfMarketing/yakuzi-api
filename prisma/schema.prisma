@@ -795,9 +795,42 @@ model BlogAuthor {
   avatar    String?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+  // Posts where this author is the PRIMARY one (BlogPost.authorId).
   posts     BlogPost[]
+  // Every post they are credited on, primary or not.
+  postLinks BlogPostAuthor[]
 
   @@map("blog_authors")
+}
+
+/**
+ * Co-authors. The primary author is BlogPost.authorId and is also present
+ * here at position 0, so this table alone answers "who is credited".
+ */
+model BlogPostAuthor {
+  postId   String
+  authorId String
+  /** Byline order. 0 is the primary author. */
+  position Int        @default(0)
+  post     BlogPost   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author   BlogAuthor @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@id([postId, authorId])
+  @@index([authorId])
+  @@map("blog_post_authors")
+}
+
+/** Additional categories. The primary is BlogPost.categoryId, also here at 0. */
+model BlogPostCategory {
+  postId     String
+  categoryId String
+  position   Int          @default(0)
+  post       BlogPost     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  category   BlogCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([postId, categoryId])
+  @@index([categoryId])
+  @@map("blog_post_categories")
 }
 
 model BlogCategory {
@@ -806,7 +839,10 @@ model BlogCategory {
   slug      String     @unique
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+  // Posts whose PRIMARY category this is (BlogPost.categoryId).
   posts     BlogPost[]
+  // Every post filed under it, primary or not.
+  postLinks BlogPostCategory[]
 
   @@map("blog_categories")
 }
@@ -835,6 +871,12 @@ model BlogPost {
   updatedAt       DateTime      @updatedAt
   author          BlogAuthor    @relation(fields: [authorId], references: [id], onDelete: Cascade)
   category        BlogCategory? @relation(fields: [categoryId], references: [id])
+  // The full sets. authorId/categoryId above stay as the PRIMARY of each —
+  // the byline's first name and the category that owns the post's
+  // articleSection — so every existing reader keeps working unchanged and
+  // there is always exactly one answer to "which category is this post in?".
+  authors         BlogPostAuthor[]
+  categories      BlogPostCategory[]
 
   @@index([slug])
   @@index([status])
