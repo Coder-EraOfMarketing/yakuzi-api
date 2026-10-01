@@ -26,6 +26,9 @@ import { StorefrontRevalidationService } from './storefront-revalidation.service
     ImageRenameService,
     StorefrontRevalidationService,
   ],
-  exports: [SeoService],
+  // StorefrontRevalidationService is exported for the catalogue write paths in
+  // products/admin: a seller's edit has to drop the pages it changed, the same
+  // way an SEO edit does.
+  exports: [SeoService, StorefrontRevalidationService],
 })
 export class SeoModule {}

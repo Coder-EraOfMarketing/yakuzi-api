@@ -5,9 +5,10 @@ import { InventoryService } from './services/inventory.service';
 import { SearchIndexService } from './services/search-index.service';
 import { AnalyticsService } from './services/analytics.service';
 import { MailModule } from '../mail/mail.module';
+import { SeoModule } from '../seo/seo.module';
 
 @Module({
-  imports: [MailModule],
+  imports: [MailModule, SeoModule],
   controllers: [ProductsController],
   providers: [
     ProductsService,
