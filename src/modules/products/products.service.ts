@@ -5,7 +5,9 @@ import {
   BadRequestException,
   ConflictException,
   Logger,
+  Optional,
 } from '@nestjs/common';
+import { StorefrontRevalidationService } from '../seo/storefront-revalidation.service';
 import { Prisma, ProductApprovalStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { InventoryService } from './services/inventory.service';
@@ -63,7 +65,24 @@ export class ProductsService {
     private readonly searchIndexService: SearchIndexService,
     private readonly analyticsService: AnalyticsService,
     private readonly mailService: MailService,
+    // @Optional so the positional construction in the unit specs keeps
+    // compiling; absent simply means no revalidation ping, which is the same
+    // behaviour as an unconfigured secret.
+    @Optional()
+    private readonly revalidation?: StorefrontRevalidationService,
   ) {}
+
+  /**
+   * Drop the storefront's cache for the product behind an offer.
+   *
+   * Fire-and-forget on purpose: every buyer page is `revalidate = 300`, so a
+   * seller's edit was invisible for up to five minutes and no browser refresh
+   * could shorten it — the cache is on the CDN. Never awaited and never able
+   * to throw, because a cold cache must not fail the write that caused it.
+   */
+  private revalidateOffer(sellerOfferId: string): void {
+    void this.revalidation?.offerChanged(sellerOfferId);
+  }
 
   // ──────────────────────────────────────────────
   // SELLER ENDPOINTS
@@ -517,6 +536,8 @@ export class ProductsService {
 
     const images = normalized.images?.length ? [] : [];
 
+    this.revalidateOffer(product.id);
+
     return {
       ...product,
       images,
@@ -596,6 +617,8 @@ export class ProductsService {
           ),
         );
     }
+
+    this.revalidateOffer(productId);
 
     return {
       ...updated,
@@ -825,6 +848,8 @@ export class ProductsService {
     ]);
     const productImages = [];
 
+    this.revalidateOffer(updated.id);
+
     return {
       ...updated,
       images: productImages,
@@ -849,6 +874,11 @@ export class ProductsService {
     await this.prisma.cartItem.deleteMany({
       where: { sellerOfferId: product.id },
     });
+
+    // Soft, not hard — the row survives, so the offer can still be resolved
+    // back to its product and the pages that were showing this seller can be
+    // dropped.
+    this.revalidateOffer(product.id);
 
     this.logger.log(`Product soft-deleted: ${product.id} and removed from all carts`);
     return { message: 'Product deleted successfully' };

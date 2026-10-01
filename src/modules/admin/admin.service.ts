@@ -3,8 +3,10 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { StorefrontRevalidationService } from '../seo/storefront-revalidation.service';
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 import slugify from 'slugify';
@@ -111,7 +113,30 @@ export class AdminService {
     private readonly buyerEmails: BuyerEmailsService,
     // Appended last, per the note above — positional spec construction.
     private readonly invoiceNumbering: InvoiceNumberingService,
+    // @Optional for the same reason: the specs that construct this service
+    // positionally stop short of this argument, and absent simply means no
+    // revalidation ping — the storefront falls back to its own timer.
+    @Optional()
+    private readonly revalidation?: StorefrontRevalidationService,
   ) {}
+
+  /**
+   * Drop the storefront's cache for the product behind an offer.
+   *
+   * Fire-and-forget: every buyer page is `revalidate = 300`, so approving,
+   * rejecting, enabling or disabling an offer stayed invisible for up to five
+   * minutes, and because that cache sits on the CDN the admin could not clear
+   * it by refreshing. Never awaited and never able to throw — a cold cache
+   * must not fail the write that caused it.
+   */
+  private revalidateOffer(sellerOfferId: string): void {
+    void this.revalidation?.offerChanged(sellerOfferId);
+  }
+
+  /** As above, for a write to the master product itself (incl. Draft/Active). */
+  private revalidateCatalogProduct(catalogProductId: string): void {
+    void this.revalidation?.catalogProductChanged(catalogProductId);
+  }
 
   /**
    * Known internal test/QA buyer account(s) — their orders are real rows in
@@ -1061,6 +1086,11 @@ export class AdminService {
         createRedirect: slugRedirect,
       });
     }
+    // Keyed on the master rather than the offer: this edits the catalog
+    // product, so it changes every listing of it, not just the one the admin
+    // happened to open. Run after any slug change so the paths are the new ones
+    // (the old URL is covered by the redirect applySlugChange writes).
+    this.revalidateCatalogProduct(master.id);
     return this.getProductById(sellerOfferId);
   }
 
@@ -1114,6 +1144,7 @@ export class AdminService {
       select: { id: true, name: true, isActive: true, updatedAt: true },
     });
 
+    this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} disabled by admin`);
     return updated;
   }
@@ -1132,6 +1163,7 @@ export class AdminService {
       select: { id: true, name: true, isActive: true, updatedAt: true },
     });
 
+    this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} enabled by admin`);
     return updated;
   }
@@ -1150,6 +1182,7 @@ export class AdminService {
       select: { id: true, name: true, isActive: true, deletedAt: true },
     });
 
+    this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} soft-deleted by admin`);
     return updated;
   }
@@ -1234,6 +1267,9 @@ export class AdminService {
       },
     });
 
+    // Approval is the moment the offer becomes buyable, so it is the one that
+    // most needs the shelves it appears on dropped straight away.
+    this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} approved by admin`);
     return updated;
   }
@@ -1265,6 +1301,7 @@ export class AdminService {
       },
     });
 
+    this.revalidateOffer(sellerOfferId);
     this.logger.log(
       `Product ${sellerOfferId} rejected by admin${reason ? `: ${reason}` : ''}`,
     );
@@ -3479,6 +3516,7 @@ export class AdminService {
         extraSubCategories: { select: { id: true, name: true, slug: true, categoryId: true } },
       },
     });
+      this.revalidateCatalogProduct(product.id);
       return product;
     } catch (error: any) {
       if (error.code === 'P2002') {
@@ -3822,6 +3860,10 @@ export class AdminService {
       }
     }
 
+    // Covers the Draft/Active flip, which decides whether this product is on
+    // the storefront at all — the edit people most expect to see immediately.
+    this.revalidateCatalogProduct(id);
+
     return updated;
     } catch (error: any) {
       if (error.code === 'P2002') {
@@ -3871,7 +3913,7 @@ export class AdminService {
     // filter on deletedAt) while leaving those records intact.
     const deletedAt = new Date();
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.sellerOffer.updateMany({
         where: {
           OR: [
@@ -3888,6 +3930,13 @@ export class AdminService {
         data: { deletedAt, isActive: false },
       });
     });
+
+    // Safe after the write precisely because this is a soft delete: the row is
+    // still there to resolve the slug and shelves from, so the pages that were
+    // showing this product can be named and dropped.
+    this.revalidateCatalogProduct(id);
+
+    return result;
   }
 
   async importSuggestions(
