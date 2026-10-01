@@ -72,6 +72,27 @@ export class CartService {
       );
     }
 
+    // 2b. The listing can be live while the product it belongs to is in Draft.
+    // Only findAll() ever checked that, so a Draft product stayed buyable
+    // through every by-id route — the saved list offered an Add for one and
+    // the bag accepted it. Resolved through both links an offer can take to
+    // its master; a master that cannot be found at all is left alone, so an
+    // orphaned listing behaves exactly as it did before.
+    const master = await this.prisma.catalogProduct.findFirst({
+      where: {
+        OR: [
+          { sellerOffers: { some: { id: sellerOffer.id } } },
+          { productVariants: { some: { sellerOffers: { some: { id: sellerOffer.id } } } } },
+        ],
+      },
+      select: { isActive: true, deletedAt: true },
+    });
+    if (master && (!master.isActive || master.deletedAt)) {
+      throw new BadRequestException(
+        'This product is not available for purchase right now',
+      );
+    }
+
     // 3. Validate minimum order quantity
     if (quantity < sellerOffer.minimumOrderQuantity) {
       throw new BadRequestException(
@@ -220,6 +241,10 @@ export class CartService {
 
                 catalogProduct: {
                   select: {
+                    // Read so a line whose product went Draft after it was
+                    // added goes stale instead of checking out.
+                    isActive: true,
+                    deletedAt: true,
                     images: {
                       select: { url: true },
                       orderBy: [{ order: 'asc' }, { id: 'asc' }],
@@ -231,6 +256,8 @@ export class CartService {
                   select: {
                     catalogProduct: {
                       select: {
+                        isActive: true,
+                        deletedAt: true,
                         images: {
                           select: { url: true },
                           orderBy: [{ order: 'asc' }, { id: 'asc' }],
@@ -272,7 +299,17 @@ export class CartService {
     const staleItemIds: string[] = [];
     const liveCartItems = cart.items.filter((item) => {
       const stock = item.sellerOffer.batches.reduce((sum, b) => sum + b.stock, 0);
-      const isStale = !item.sellerOffer.isActive || !!item.sellerOffer.deletedAt || stock <= 0;
+      // The master counts as well as the listing. A product put back into
+      // Draft stops being for sale, and a line already in the bag must not be
+      // the one route left that still checks out.
+      const master =
+        item.sellerOffer.variant?.catalogProduct ?? item.sellerOffer.catalogProduct;
+      const masterGone = !!master && (!master.isActive || !!master.deletedAt);
+      const isStale =
+        !item.sellerOffer.isActive ||
+        !!item.sellerOffer.deletedAt ||
+        masterGone ||
+        stock <= 0;
       if (isStale) staleItemIds.push(item.id);
       return !isStale;
     });
@@ -328,6 +365,12 @@ export class CartService {
         sellerOffer: {
           include: {
             batches: { where: { stock: { gt: 0 } } },
+            catalogProduct: { select: { isActive: true, deletedAt: true } },
+            variant: {
+              select: {
+                catalogProduct: { select: { isActive: true, deletedAt: true } },
+              },
+            },
           },
         },
       },
@@ -341,8 +384,16 @@ export class CartService {
       throw new NotFoundException('Cart item not found');
     }
 
-    // 2. Validate product is still active
-    if (!cartItem.sellerOffer.isActive || cartItem.sellerOffer.deletedAt) {
+    // 2. Validate product is still active — the master as well as the listing,
+    // so raising the quantity on a product that has gone Draft is refused too.
+    const master =
+      cartItem.sellerOffer.variant?.catalogProduct ??
+      cartItem.sellerOffer.catalogProduct;
+    if (
+      !cartItem.sellerOffer.isActive ||
+      cartItem.sellerOffer.deletedAt ||
+      (master && (!master.isActive || master.deletedAt))
+    ) {
       throw new BadRequestException('This product is no longer available');
     }
 

@@ -895,6 +895,21 @@ export class ProductsService {
         id: { in: ids },
         isActive: true,
         deletedAt: null,
+        // A live listing on a Draft master is not for sale. Checked through
+        // both links an offer can take to its product; an offer with neither
+        // is left to the isActive/deletedAt rules above, as before.
+        NOT: {
+          OR: [
+            { catalogProduct: { OR: [{ isActive: false }, { deletedAt: { not: null } }] } },
+            {
+              variant: {
+                catalogProduct: {
+                  OR: [{ isActive: false }, { deletedAt: { not: null } }],
+                },
+              },
+            },
+          ],
+        },
       },
       select: {
         id: true,
@@ -1358,6 +1373,10 @@ export class ProductsService {
       where: {
         OR: [{ id }, { slug: id }],
         deletedAt: null,
+        // Draft is not merely "off the shelves". Without this the product page
+        // stayed reachable on its own URL for anyone holding the link — out of
+        // search and out of the category grids, but open for business.
+        isActive: true,
       },
       include: {
         category: true,
