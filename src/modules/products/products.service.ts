@@ -897,6 +897,26 @@ export class ProductsService {
           category: true,
           subCategory: true,
           images: { orderBy: [{ order: 'asc' }, { id: 'asc' }], take: 1 },
+          // A card needs exactly one offer — the cheapest — to show a price, so
+          // both offer relations below are capped with `take: 1`. The number of
+          // sellers therefore CANNOT be read off the hydrated offers: counting
+          // them reported "1 seller" for a product two sellers had listed, and
+          // the admin list's "+N other sellers" badge (gated on > 1) could
+          // never appear. Count in the database instead, which keeps the card
+          // query as cheap as it was.
+          //
+          // The two counts mirror how collectListings() de-duplicates. An offer
+          // carrying BOTH catalogProductId and variantId is returned by both
+          // relations, and there the variant copy wins — so the direct count
+          // takes only offers with no variant, and the variant counts take the
+          // rest. Every offer is then counted exactly once.
+          _count: {
+            select: {
+              sellerOffers: {
+                where: { isActive: true, deletedAt: null, variantId: null },
+              },
+            },
+          },
           sellerOffers: {
             where: { isActive: true, deletedAt: null },
             select: {
@@ -947,9 +967,33 @@ export class ProductsService {
                 orderBy: { mrp: 'asc' },
                 take: 1,
               },
+              _count: {
+                select: {
+                  sellerOffers: { where: { isActive: true, deletedAt: null } },
+                },
+              },
             },
           },
         };
+  }
+
+  /**
+   * How many sellers list this product.
+   *
+   * Counted in the database when the caller used buyerGridInclude(), because
+   * that include caps the hydrated offers at one per relation and the length of
+   * that list is not the number of sellers. Callers that hydrate every offer
+   * (getFeatured) carry no `_count`, and for them the list IS the full set — so
+   * fall back to its length rather than reporting zero.
+   */
+  private countSellers(m: any, listings: any[]): number {
+    const direct = m?._count?.sellerOffers;
+    if (typeof direct !== 'number') return listings.length;
+    const viaVariants = (m.productVariants || []).reduce(
+      (sum: number, v: any) => sum + (v?._count?.sellerOffers ?? 0),
+      0,
+    );
+    return direct + viaVariants;
   }
 
   async findAll(query: QueryProductDto) {
@@ -1485,7 +1529,7 @@ export class ProductsService {
       moq: minMoq,
       bestListingId,
       hasSellers,
-      sellerCount: listings.length,
+      sellerCount: this.countSellers(m, listings),
       image: m.images?.[0]?.url || null,
       // Every image, not just the primary one. The image sitemap could only
       // ever list one picture per product because this was the sole image the
