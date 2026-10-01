@@ -174,11 +174,32 @@ describe('ProductsService.validateIds', () => {
 
     await service.validateIds(['offer-1', 'offer-2']);
 
-    expect(prisma.sellerOffer.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: { in: ['offer-1', 'offer-2'] }, isActive: true, deletedAt: null },
-      }),
-    );
+    const { where } = prisma.sellerOffer.findMany.mock.calls[0][0];
+    expect(where).toMatchObject({
+      id: { in: ['offer-1', 'offer-2'] },
+      isActive: true,
+      deletedAt: null,
+    });
+  });
+
+  it('also excludes a live offer whose product has gone back to Draft', async () => {
+    // "Draft" used to mean hidden from browse only. This query is what the
+    // storefront re-checks saved and cart ids against, so without the master's
+    // state a Draft product stayed purchasable through every by-id route.
+    const { service, prisma } = buildForValidateIds([]);
+
+    await service.validateIds(['offer-1']);
+
+    const { where } = prisma.sellerOffer.findMany.mock.calls[0][0];
+    // Both links an offer can take to its product are covered.
+    expect(where.NOT.OR).toEqual([
+      { catalogProduct: { OR: [{ isActive: false }, { deletedAt: { not: null } }] } },
+      {
+        variant: {
+          catalogProduct: { OR: [{ isActive: false }, { deletedAt: { not: null } }] },
+        },
+      },
+    ]);
   });
 
   it('returns an empty array for an empty id list without querying', async () => {

@@ -32,6 +32,17 @@ export interface WishlistProduct {
    * on its next check.
    */
   bestListingId?: string | null;
+  /**
+   * Whether a buyer can actually act on this save right now.
+   *
+   * A save outlives what it points at. The master product can be put back into
+   * Draft, or the only seller can delist, and neither removes the row — so the
+   * saved list was offering an "Add" for products that are not for sale, and
+   * the bag accepted them. False means the storefront shows the card greyed
+   * out with no Add, rather than the item silently vanishing from someone's
+   * saved list the moment an admin edits it.
+   */
+  available: boolean;
 }
 
 export interface WishlistEntry {
@@ -225,6 +236,12 @@ export class WishlistService {
           mrp: true,
           finalCustomerPayable: true,
           catalogProductId: true,
+          // Read to decide `available`: this query deliberately does NOT filter
+          // on them, because a save must still resolve to a card once its
+          // listing goes away — it just stops being actionable.
+          isActive: true,
+          approvalStatus: true,
+          deletedAt: true,
           // An offer reaches its catalog product either directly or through a
           // variant. Only the variant was read, so a listing made straight
           // against a product had no picture in the saved list.
@@ -232,6 +249,8 @@ export class WishlistService {
             select: {
               id: true,
               slug: true,
+              isActive: true,
+              deletedAt: true,
               images: {
                 select: { url: true },
                 orderBy: [{ order: 'asc' }, { id: 'asc' }],
@@ -244,6 +263,8 @@ export class WishlistService {
                 select: {
                   id: true,
                   slug: true,
+                  isActive: true,
+                  deletedAt: true,
                   images: {
                     select: { url: true },
                     orderBy: [{ order: 'asc' }, { id: 'asc' }],
@@ -257,6 +278,15 @@ export class WishlistService {
 
       for (const offer of offers) {
         const catalog = offer.variant?.catalogProduct ?? offer.catalogProduct;
+        // Both halves have to hold: a live listing is not for sale if the
+        // master it hangs off has been put back into Draft, which is exactly
+        // how two Draft products came to sit in the saved list with a working
+        // Add button.
+        const listingLive =
+          offer.isActive &&
+          offer.approvalStatus === ProductApprovalStatus.APPROVED &&
+          !offer.deletedAt;
+        const masterLive = catalog ? catalog.isActive && !catalog.deletedAt : true;
         found.set(offer.id, {
           catalogId: catalog?.id ?? offer.id,
           product: {
@@ -270,6 +300,7 @@ export class WishlistService {
             manufacturer: offer.manufacturer,
             // The row already holds a listing; that is the one to put in the bag.
             bestListingId: offer.id,
+            available: listingLive && masterLive,
           },
         });
       }
@@ -284,6 +315,9 @@ export class WishlistService {
             slug: true,
             manufacturer: true,
             mrp: true,
+            // Read, not filtered on: a Draft product stays in the saved list as
+            // an unavailable card rather than disappearing out of it.
+            isActive: true,
             images: {
               select: { url: true },
               orderBy: [{ order: 'asc' }, { id: 'asc' }],
@@ -313,6 +347,9 @@ export class WishlistService {
               images: product.images.map((i) => i.url),
               manufacturer: product.manufacturer,
               bestListingId: offer?.id ?? null,
+              // cheapestOfferPrices only returns live, approved listings, so no
+              // offer means nothing is on sale even when the product is Active.
+              available: product.isActive && offer != null,
             },
           });
         }
