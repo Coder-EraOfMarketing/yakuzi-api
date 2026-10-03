@@ -11,6 +11,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import slugify from 'slugify';
 import { buildPayoutInputFromOrderItem, calculateSellerPayout } from '../settlements/payout-calculator';
+import { isSelfShipOrder, resolveOfferShipping } from '../../common/utils/shipping.util';
 import { AdminQuerySuggestionsDto } from './dto/query-suggestions.dto';
 import { AdminUpdateProductDto } from './dto/admin-update-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
@@ -1627,12 +1628,19 @@ export class AdminService {
 
     if (!order) throw new NotFoundException('Order not found');
 
+    // Self-ship orders keep their shipping with the seller, so nothing is
+    // withheld for it. Read from the order's own snapshot, not the seller's
+    // current toggle, or every past order re-prices when an admin flips it.
+    const sellerKeptShipping = isSelfShipOrder(order);
+
     const items = order.items.map((item: any) => {
       let estimatedPayout: any = null;
       if (item.settlement) {
         const comm = Number(item.settlement.commission || 0);
         const commGst = Number(item.settlement.commissionGst || 0);
-        const ship = Number(item.sellerOffer?.finalShippingPrice ?? item.sellerOffer?.shippingCharges ?? 0);
+        const ship = sellerKeptShipping
+          ? 0
+          : Number(item.sellerOffer?.finalShippingPrice ?? item.sellerOffer?.shippingCharges ?? 0);
         const net = Number(item.settlement.netPayout || item.settlement.amount || 0);
         const gross = Number(item.settlement.grossAmount || item.totalPrice || 0);
         const catalogProd = item.sellerOffer?.catalogProduct ?? item.sellerOffer?.variant?.catalogProduct;
@@ -1663,7 +1671,7 @@ export class AdminService {
           isLedgered: true,
         };
       } else {
-        const input = buildPayoutInputFromOrderItem(item);
+        const input = buildPayoutInputFromOrderItem(item, sellerKeptShipping);
         const breakdown = calculateSellerPayout(input);
         estimatedPayout = {
           grossAmount: breakdown.grossAmount.toNumber(),
@@ -2099,6 +2107,9 @@ export class AdminService {
           orderBy: { createdAt: 'desc' },
           include: {
             sellerOffer: { include: { catalogProduct: true } },
+            // Who shipped it decides whether shipping is withheld, and that is the
+            // order's own snapshot, never the seller's current toggle.
+            order: { select: { fulfillmentMode: true } },
             seller: { select: { id: true, companyName: true, userId: true } },
           },
           skip: skipPending,
@@ -2106,7 +2117,7 @@ export class AdminService {
         });
 
         projectedSettlements = pendingItems.map(item => {
-          const input = buildPayoutInputFromOrderItem(item);
+          const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
           const breakdown = calculateSellerPayout(input);
 
           return {
@@ -2192,12 +2203,15 @@ export class AdminService {
               where: pendingWhere,
               include: {
                 sellerOffer: { include: { catalogProduct: true } },
+                // Who shipped it decides whether shipping is withheld, and that is the
+                // order's own snapshot, never the seller's current toggle.
+                order: { select: { fulfillmentMode: true } },
                 seller: true,
               },
             })
           : [];
         projectedAmount = pendingItems.reduce((sum: number, item: any) => {
-          const input = buildPayoutInputFromOrderItem(item);
+          const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
           const breakdown = calculateSellerPayout(input);
           return sum + breakdown.netPayout.toNumber();
         }, 0);
@@ -2251,6 +2265,9 @@ export class AdminService {
           where: { id: orderItemId },
           include: {
             sellerOffer: { include: { catalogProduct: true } },
+            // Who shipped it decides whether shipping is withheld, and that is the
+            // order's own snapshot, never the seller's current toggle.
+            order: { select: { fulfillmentMode: true } },
             seller: true,
           },
         });
@@ -2259,7 +2276,7 @@ export class AdminService {
           throw new NotFoundException('Order item not found');
         }
 
-        const input = buildPayoutInputFromOrderItem(item);
+        const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
         const breakdown = calculateSellerPayout(input);
 
         existing = await this.prisma.sellerSettlement.create({
@@ -2360,7 +2377,7 @@ export class AdminService {
         });
 
         if (!existing) {
-          const input = buildPayoutInputFromOrderItem(item);
+          const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(order));
           const breakdown = calculateSellerPayout(input);
 
           await this.prisma.sellerSettlement.create({
@@ -3097,8 +3114,15 @@ export class AdminService {
   }
 
   /**
-   * Toggles self-ship fulfillment for a seller. Touches ONLY selfShipEnabled —
-   * existing orders keep the fulfillmentMode snapshotted at their creation.
+   * Toggles self-ship fulfillment for a seller. Existing ORDERS are untouched —
+   * they keep the fulfillmentMode snapshotted at their creation, so no past
+   * payout is ever re-priced by this.
+   *
+   * Switching it OFF does change the seller's LISTINGS: Yukizi is shipping for
+   * them again, so Yukizi's catalogue shipping charge takes over from whatever
+   * they had set themselves. Switching it ON leaves the listings alone — the
+   * figure becomes theirs to change, and there is no stored "their own" value to
+   * restore, so it takes effect the next time they save a listing.
    */
   async updateSellerSelfShip(
     sellerId: string,
@@ -3113,11 +3137,65 @@ export class AdminService {
       throw new NotFoundException('Seller profile not found');
     }
 
+    if (!dto.selfShipEnabled) {
+      await this.restoreCatalogueShippingForSeller(sellerId);
+    }
+
     return this.prisma.sellerProfile.update({
       where: { id: sellerId },
       data: { selfShipEnabled: dto.selfShipEnabled },
       select: { id: true, companyName: true, selfShipEnabled: true },
     });
+  }
+
+  /**
+   * Puts every live listing of a seller back onto its catalogue product's
+   * shipping charge, for when Yukizi resumes shipping for them.
+   *
+   * Listings with no master are left alone — there is no platform figure to
+   * impose. Each one is re-priced through ProductsService so the stored
+   * finalCustomerPayable (what the grid, the cart and checkout all quote) moves
+   * with it, and the storefront cache is told, or the old price survives the
+   * full five-minute ISR window.
+   */
+  private async restoreCatalogueShippingForSeller(sellerId: string) {
+    const offers = await this.prisma.sellerOffer.findMany({
+      where: { sellerId, deletedAt: null },
+      select: {
+        id: true,
+        catalogProduct: {
+          select: { shippingCharges: true, finalShippingPrice: true, shippingGstPercent: true, isTaxIncluded: true },
+        },
+        variant: {
+          select: {
+            catalogProduct: {
+              select: { shippingCharges: true, finalShippingPrice: true, shippingGstPercent: true, isTaxIncluded: true },
+            },
+          },
+        },
+      },
+    });
+
+    for (const offer of offers) {
+      const master = offer.catalogProduct ?? offer.variant?.catalogProduct;
+      if (!master) continue;
+
+      const shipping = resolveOfferShipping(
+        { shippingCharges: 0, finalShippingPrice: 0 },
+        master,
+        false,
+      );
+      await this.prisma.sellerOffer.update({
+        where: { id: offer.id },
+        data: shipping,
+      });
+      await this.productsService.recalculateFinalCustomerPayable(offer.id);
+      await this.revalidation?.offerChanged(offer.id);
+    }
+
+    this.logger.log(
+      `Self-ship off for seller ${sellerId}: ${offers.length} listing(s) back on catalogue shipping`,
+    );
   }
 
   async updateSellerGstPanStatus(

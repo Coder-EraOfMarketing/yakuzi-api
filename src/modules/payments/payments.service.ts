@@ -15,6 +15,7 @@ import {
   OrderStatus,
 } from '@prisma/client';
 import { calculateSellerPayout } from '../settlements/payout-calculator';
+import { isSelfShipOrder } from '../../common/utils/shipping.util';
 import { InvoiceEmailService } from '../orders/invoice-email.service';
 import { SellerOrderNotifierService } from '../orders/seller-order-notifier.service';
 import { WebAnalyticsService } from '../web-analytics/web-analytics.service';
@@ -350,7 +351,7 @@ export class PaymentsService {
           newStatus === PaymentStatus.SUCCESS &&
           ro.orderStatus === OrderStatus.DELIVERED
         ) {
-          await this.createSettlements(tx, ro.items);
+          await this.createSettlements(tx, ro.items, isSelfShipOrder(ro));
         }
       }
 
@@ -535,7 +536,11 @@ export class PaymentsService {
   // HELPER: Create seller settlements
   // ──────────────────────────────────────────────
 
-  private async createSettlements(tx: any, items: any[]) {
+  private async createSettlements(
+    tx: any,
+    items: any[],
+    sellerKeepsShipping: boolean,
+  ) {
     for (const item of items) {
       // Skip if settlement already exists for this order item
       const existing = await tx.sellerSettlement.findUnique({
@@ -559,6 +564,9 @@ export class PaymentsService {
         finalShippingPrice,
         commissionPercent,
         commissionGstPercent,
+        // The seller booked the courier, so the shipping the buyer paid is
+        // theirs and the platform withholds none of it.
+        sellerKeepsShipping,
       });
 
       await tx.sellerSettlement.create({

@@ -118,4 +118,58 @@ describe('calculateSellerPayout', () => {
     expect(result.netPayout.toFixed(2)).toBe('1000.00');
     expect(result.status).toBe('PENDING');
   });
+
+  // Test 6: Self-ship — the seller booked the courier, so the shipping the
+  // buyer paid is theirs. These are the numbers from the bug report's product:
+  // ₹1,600 base, 15% commission, 18% GST on fees, ₹150 seller-set shipping.
+  describe('when the seller shipped it themselves', () => {
+    const selfShip = input({
+      baseSellingPrice: 1600,
+      quantity: 1,
+      finalShippingPrice: 150,
+      commissionPercent: 15,
+      commissionGstPercent: 18,
+      sellerKeepsShipping: true,
+    });
+
+    it('withholds no shipping and earns no commission on it', () => {
+      // Gross = 1600 + 150 = 1750 (the buyer really did pay the shipping)
+      // Commission = 15% of 1600, NOT of 1750 = 240
+      // CommissionGST = 240 × 18% = 43.20
+      // Deductions = 240 + 43.20 + 0 = 283.20
+      // Net = 1750 - 283.20 = 1466.80
+      const result = calculateSellerPayout(selfShip);
+
+      expect(result.grossAmount.toFixed(2)).toBe('1750.00');
+      expect(result.buyerPaidShipping.toFixed(2)).toBe('150.00');
+      expect(result.finalShippingPrice.toFixed(2)).toBe('0.00');
+      expect(result.commission.toFixed(2)).toBe('240.00');
+      expect(result.commissionGst.toFixed(2)).toBe('43.20');
+      expect(result.totalDeductions.toFixed(2)).toBe('283.20');
+      expect(result.netPayout.toFixed(2)).toBe('1466.80');
+    });
+
+    it('leaves the seller better off than the same platform-shipped order', () => {
+      const platform = calculateSellerPayout({
+        ...selfShip,
+        sellerKeepsShipping: false,
+      });
+      const seller = calculateSellerPayout(selfShip);
+
+      // Platform-shipped the ₹150 is withheld AND commissioned (15% of 1750,
+      // not 1600), so the gap is the shipping plus the commission and GST it
+      // dragged with it: 150 + 22.50 + 4.05 = 176.55.
+      expect(platform.netPayout.toFixed(2)).toBe('1290.25');
+      expect(seller.netPayout.minus(platform.netPayout).toFixed(2)).toBe(
+        '176.55',
+      );
+    });
+
+    it('defaults to withholding shipping when the flag is absent', () => {
+      const { sellerKeepsShipping, ...withoutFlag } = selfShip;
+      const result = calculateSellerPayout(withoutFlag);
+
+      expect(result.finalShippingPrice.toFixed(2)).toBe('150.00');
+    });
+  });
 });

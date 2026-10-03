@@ -15,6 +15,11 @@ import { SelfShipTrackingDto } from './dto/self-ship-tracking.dto';
 import { OrderStatus, Role, PaymentStatus, Prisma } from '@prisma/client';
 import { ShiprocketService } from './shiprocket.service';
 import { calculateSellerPayout, buildPayoutInputFromOrderItem } from '../settlements/payout-calculator';
+import {
+  FULFILLMENT_MODE_SELF_SHIP,
+  FULFILLMENT_MODE_SHIPROCKET,
+  isSelfShipOrder,
+} from '../../common/utils/shipping.util';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OtpSmsService } from '../auth/services/otp-sms.service';
@@ -50,11 +55,15 @@ const ADMIN_SHIPPING_DOC_FIELDS = [
 ] as const;
 
 /**
- * Order.fulfillmentMode values. Snapshotted from the seller's selfShipEnabled
- * flag at checkout; the two flows are mutually exclusive per order.
+ * Order.fulfillmentMode values, re-exported from common/utils/shipping.util so
+ * the long-standing `from './orders.service'` imports keep working. They moved
+ * because the payout calculator needs them too, and a pure calculator must not
+ * import a service.
  */
-export const FULFILLMENT_MODE_SHIPROCKET = 'shiprocket';
-export const FULFILLMENT_MODE_SELF_SHIP = 'self_ship';
+export {
+  FULFILLMENT_MODE_SHIPROCKET,
+  FULFILLMENT_MODE_SELF_SHIP,
+} from '../../common/utils/shipping.util';
 
 @Injectable()
 export class OrdersService {
@@ -1160,12 +1169,19 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
+    // Self-ship orders keep their shipping with the seller, so nothing is
+    // withheld for it. Read from the order's own snapshot, not the seller's
+    // current toggle, or every past order re-prices when an admin flips it.
+    const sellerKeptShipping = isSelfShipOrder(order);
+
     const items = order.items.map((item: any) => {
       let estimatedPayout: any = null;
       if (item.settlement) {
         const comm = Number(item.settlement.commission || 0);
         const commGst = Number(item.settlement.commissionGst || 0);
-        const ship = Number(item.sellerOffer?.finalShippingPrice ?? item.sellerOffer?.shippingCharges ?? 0);
+        const ship = sellerKeptShipping
+          ? 0
+          : Number(item.sellerOffer?.finalShippingPrice ?? item.sellerOffer?.shippingCharges ?? 0);
         const net = Number(item.settlement.netPayout || item.settlement.amount || 0);
         const gross = Number(item.settlement.grossAmount || item.totalPrice || 0);
         const catalogProd = item.sellerOffer?.catalogProduct ?? item.sellerOffer?.variant?.catalogProduct;
@@ -1196,7 +1212,7 @@ export class OrdersService {
           isLedgered: true,
         };
       } else {
-        const input = buildPayoutInputFromOrderItem(item);
+        const input = buildPayoutInputFromOrderItem(item, sellerKeptShipping);
         const breakdown = calculateSellerPayout(input);
         estimatedPayout = {
           grossAmount: breakdown.grossAmount.toNumber(),
@@ -1480,6 +1496,8 @@ export class OrdersService {
   async createSettlementsForDeliveredOrder(order: {
     orderStatus: OrderStatus;
     paymentStatus: PaymentStatus;
+    /** Snapshotted at checkout; decides whether shipping is withheld. */
+    fulfillmentMode?: string | null;
     items: Array<{
       id: string;
       sellerId: string;
@@ -1534,6 +1552,9 @@ export class OrdersService {
             finalShippingPrice,
             commissionPercent,
             commissionGstPercent,
+            // The seller booked the courier, so the shipping the buyer paid is
+            // theirs and the platform withholds none of it.
+            sellerKeepsShipping: isSelfShipOrder(order),
           });
 
           await tx.sellerSettlement.create({

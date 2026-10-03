@@ -19,6 +19,7 @@ import { QueryProductDto } from './dto/query-product.dto';
 import { CreateProductRequestDto } from './dto/create-product-request.dto';
 import { BulkCreateProductDto } from './dto/bulk-create-product.dto';
 import { MailService } from '../mail/mail.service';
+import { OfferShipping, resolveOfferShipping } from '../../common/utils/shipping.util';
 
 /**
  * Match a catalog product by a condition on its seller offers.
@@ -226,6 +227,23 @@ export class ProductsService {
     }
 
     const isFromMaster = !!catalogProduct;
+
+    // Yukizi ships for this seller, so Yukizi's shipping charge is the one that
+    // counts — the submitted figure is replaced before any of the write paths
+    // below read it, variants included. A self-shipping seller books their own
+    // courier and keeps whatever they typed.
+    const catalogueShipping = this.shippingFromCatalogue(
+      seller.selfShipEnabled,
+      catalogProduct,
+    );
+    if (catalogueShipping) {
+      normalized.shippingCharges = catalogueShipping.shippingCharges;
+      normalized.finalShippingPrice = catalogueShipping.finalShippingPrice;
+      for (const v of dto.variants ?? []) {
+        (v as any).shippingCharges = catalogueShipping.shippingCharges;
+        (v as any).finalShippingPrice = catalogueShipping.finalShippingPrice;
+      }
+    }
 
     // Handle multiple variants
     if (dto.variants && dto.variants.length > 0) {
@@ -787,8 +805,38 @@ export class ProductsService {
     if (productData.description)
       productData.description = productData.description.trim();
 
+    // Same rule as create(): when Yukizi does the shipping, the catalogue
+    // product's charge is authoritative and replaces whatever the form sent.
+    // Resolved against the master this edit leaves the listing attached to —
+    // the one being connected now, or the one it already had.
+    const owner = await this.prisma.sellerProfile.findUnique({
+      where: { userId },
+      select: { selfShipEnabled: true },
+    });
+    const master = await this.prisma.catalogProduct.findFirst({
+      where: masterProductId
+        ? { id: masterProductId }
+        : {
+            OR: [
+              { sellerOffers: { some: { id: product.id } } },
+              { productVariants: { some: { sellerOffers: { some: { id: product.id } } } } },
+            ],
+          },
+      select: {
+        shippingCharges: true,
+        finalShippingPrice: true,
+        shippingGstPercent: true,
+        isTaxIncluded: true,
+      },
+    });
+    const catalogueShipping = this.shippingFromCatalogue(
+      owner?.selfShipEnabled === true,
+      master,
+    );
+
     const updateData: Prisma.SellerOfferUpdateInput = {
       ...productData,
+      ...(catalogueShipping ?? {}),
       ...(categoryId ? { category: { connect: { id: categoryId } } } : {}),
       ...(subCategoryId
         ? { subCategory: { connect: { id: subCategoryId } } }
@@ -1983,6 +2031,30 @@ export class ProductsService {
   /**
    * Find a product owned by the current seller, or throw.
    */
+  /**
+   * The shipping a listing must carry, given who ships it.
+   *
+   * Yukizi ships (Self Ship off) → the catalogue product's charge wins, whatever
+   * the form submitted, so every listing of a product ships at the same platform
+   * rate and no seller can undercut or inflate it. The seller ships (Self Ship
+   * on) → they book their own courier and name their own price, including zero,
+   * so what they submitted stands.
+   *
+   * Returns null when nothing needs overriding — the seller self-ships, or the
+   * listing has no master product to inherit a figure from.
+   */
+  private shippingFromCatalogue(
+    sellerSelfShips: boolean,
+    master: { shippingCharges?: any; finalShippingPrice?: any; shippingGstPercent?: any; isTaxIncluded?: boolean } | null | undefined,
+  ): OfferShipping | null {
+    if (sellerSelfShips || !master) return null;
+    return resolveOfferShipping(
+      { shippingCharges: 0, finalShippingPrice: 0 },
+      master,
+      false,
+    );
+  }
+
   private async findOwnProduct(userId: string, productId: string) {
     const seller = await this.prisma.sellerProfile.findUnique({
       where: { userId },

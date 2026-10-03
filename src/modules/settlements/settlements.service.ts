@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { MarkPaidDto } from './dto/mark-paid.dto';
 import { calculateSellerPayout, PayoutInput, buildPayoutInputFromOrderItem } from './payout-calculator';
+import { isSelfShipOrder } from '../../common/utils/shipping.util';
 
 @Injectable()
 export class SettlementsService {
@@ -72,11 +73,14 @@ export class SettlementsService {
       where: pendingWhere,
       include: {
         sellerOffer: { include: { catalogProduct: true } },
+        // Who shipped it decides whether shipping is withheld, and that is the
+        // order's own snapshot, never the seller's current toggle.
+        order: { select: { fulfillmentMode: true } },
       },
     });
 
     const projectedSettlements = pendingItems.map(item => {
-      const input = buildPayoutInputFromOrderItem(item);
+      const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
       const breakdown = calculateSellerPayout(input);
 
       return {
@@ -155,11 +159,14 @@ export class SettlementsService {
         sellerOffer: {
           include: { catalogProduct: true },
         },
+        // Who shipped it decides whether shipping is withheld, and that is the
+        // order's own snapshot, never the seller's current toggle.
+        order: { select: { fulfillmentMode: true } },
       },
     });
 
     for (const item of pendingItems) {
-      const input = buildPayoutInputFromOrderItem(item);
+      const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
       const breakdown = calculateSellerPayout(input);
       // Add to pendingPayouts, but not totalEarnings (which is for generated settlements)
       pendingPayouts += breakdown.netPayout.toNumber();
@@ -312,11 +319,14 @@ export class SettlementsService {
       include: {
         seller: { select: { id: true, companyName: true, userId: true } },
         sellerOffer: { include: { catalogProduct: true } },
+        // Who shipped it decides whether shipping is withheld, and that is the
+        // order's own snapshot, never the seller's current toggle.
+        order: { select: { fulfillmentMode: true } },
       },
     });
 
     const projectedSettlements = pendingItems.map(item => {
-      const input = buildPayoutInputFromOrderItem(item);
+      const input = buildPayoutInputFromOrderItem(item, isSelfShipOrder(item.order));
       const breakdown = calculateSellerPayout(input);
 
       return {
