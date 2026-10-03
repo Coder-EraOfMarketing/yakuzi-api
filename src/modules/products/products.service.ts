@@ -162,6 +162,50 @@ export class ProductsService {
     if (!category) throw new NotFoundException('Category not found');
     if (!subCategory) throw new NotFoundException('Sub-category not found');
 
+    const masterProductId = dto.masterProductId;
+    let catalogProduct: any = null;
+    if (masterProductId) {
+      catalogProduct = await this.prisma.catalogProduct.findUnique({
+        where: { id: masterProductId },
+        include: { productVariants: true },
+      });
+    }
+
+    if (!catalogProduct && !normalized.variantId) {
+      catalogProduct = await this.prisma.catalogProduct.findFirst({
+        where: {
+          name: { equals: normalized.name, mode: 'insensitive' },
+          manufacturer: {
+            equals: normalized.manufacturer,
+            mode: 'insensitive',
+          },
+          deletedAt: null,
+        },
+        include: { productVariants: true },
+      });
+    }
+
+    // Yukizi ships for this seller, so Yukizi's shipping charge is the one that
+    // counts — the submitted figure is replaced before any of the write paths
+    // below read it, variants included. A self-shipping seller books their own
+    // courier and keeps whatever they typed.
+    //
+    // Resolved up here, ahead of the two upsert branches below, so a CSV import
+    // or a channel sync coming in by externalId or slug cannot set a shipping
+    // charge the seller's own form would not have been allowed to.
+    const catalogueShipping = this.shippingFromCatalogue(
+      seller.selfShipEnabled,
+      catalogProduct,
+    );
+    if (catalogueShipping) {
+      normalized.shippingCharges = catalogueShipping.shippingCharges;
+      normalized.finalShippingPrice = catalogueShipping.finalShippingPrice;
+      for (const v of dto.variants ?? []) {
+        (v as any).shippingCharges = catalogueShipping.shippingCharges;
+        (v as any).finalShippingPrice = catalogueShipping.finalShippingPrice;
+      }
+    }
+
     // Idempotent upsert: if externalId is provided and exists, update instead
     if (normalized.externalId) {
       const existing = await this.prisma.sellerOffer.findUnique({
@@ -203,47 +247,7 @@ export class ProductsService {
       }
     }
 
-    const masterProductId = dto.masterProductId;
-    let catalogProduct: any = null;
-    if (masterProductId) {
-      catalogProduct = await this.prisma.catalogProduct.findUnique({
-        where: { id: masterProductId },
-        include: { productVariants: true },
-      });
-    }
-
-    if (!catalogProduct && !normalized.variantId) {
-      catalogProduct = await this.prisma.catalogProduct.findFirst({
-        where: {
-          name: { equals: normalized.name, mode: 'insensitive' },
-          manufacturer: {
-            equals: normalized.manufacturer,
-            mode: 'insensitive',
-          },
-          deletedAt: null,
-        },
-        include: { productVariants: true },
-      });
-    }
-
     const isFromMaster = !!catalogProduct;
-
-    // Yukizi ships for this seller, so Yukizi's shipping charge is the one that
-    // counts — the submitted figure is replaced before any of the write paths
-    // below read it, variants included. A self-shipping seller books their own
-    // courier and keeps whatever they typed.
-    const catalogueShipping = this.shippingFromCatalogue(
-      seller.selfShipEnabled,
-      catalogProduct,
-    );
-    if (catalogueShipping) {
-      normalized.shippingCharges = catalogueShipping.shippingCharges;
-      normalized.finalShippingPrice = catalogueShipping.finalShippingPrice;
-      for (const v of dto.variants ?? []) {
-        (v as any).shippingCharges = catalogueShipping.shippingCharges;
-        (v as any).finalShippingPrice = catalogueShipping.finalShippingPrice;
-      }
-    }
 
     // Handle multiple variants
     if (dto.variants && dto.variants.length > 0) {
@@ -612,7 +616,10 @@ export class ProductsService {
 
     await this.inventoryService.updateDefaultBatch(productId, dto.stock);
 
-
+    // Every other write path does this; this one never did, so an import that
+    // changed the price or the shipping left the stored finalCustomerPayable --
+    // what the grid, the cart and checkout all quote -- on the old numbers.
+    await this.recalculateFinalCustomerPayable(productId);
 
     const batch = await this.prisma.productBatch.findFirst({
       where: { sellerOfferId: productId, batchNumber: 'DEFAULT' },
@@ -1339,6 +1346,8 @@ export class ProductsService {
           select: {
             id: true,
             companyName: true,
+            // Decides whether this listing carries Yukizi shipping or the seller's own.
+            selfShipEnabled: true,
             rating: true,
             city: true,
             state: true,
@@ -1364,6 +1373,8 @@ export class ProductsService {
                   select: {
                     id: true,
                     companyName: true,
+                    // Decides whether this listing carries Yukizi shipping or the seller's own.
+                    selfShipEnabled: true,
                     rating: true,
                     city: true,
                     state: true,
@@ -1382,6 +1393,8 @@ export class ProductsService {
                       select: {
                         id: true,
                         companyName: true,
+                        // Decides whether this listing carries Yukizi shipping or the seller's own.
+                        selfShipEnabled: true,
                         rating: true,
                         city: true,
                         state: true,
@@ -1438,6 +1451,8 @@ export class ProductsService {
               select: {
                 id: true,
                 companyName: true,
+                // Decides whether this listing carries Yukizi shipping or the seller's own.
+                selfShipEnabled: true,
                 rating: true,
                 city: true,
                 state: true,
@@ -1456,6 +1471,8 @@ export class ProductsService {
                   select: {
                     id: true,
                     companyName: true,
+                    // Decides whether this listing carries Yukizi shipping or the seller's own.
+                    selfShipEnabled: true,
                     rating: true,
                     city: true,
                     state: true,
@@ -1684,6 +1701,10 @@ export class ProductsService {
       shippingCharges: sellerListing?.shippingCharges ?? bestListing?.shippingCharges ?? m.shippingCharges ?? 0,
       finalShippingPrice: sellerListing?.finalShippingPrice ?? bestListing?.finalShippingPrice ?? m.finalShippingPrice ?? null,
       shippingGstPercent: m.shippingGstPercent,
+      // The owner of the listing this payload quotes. The product form reads
+      // selfShipEnabled off it to decide whether the shipping field belongs to
+      // the seller or to Yukizi, and the admin's edit screen names them.
+      seller: sellerListing?.seller ?? bestListing?.seller ?? null,
       images: m.images,
       // The storefront emits schema.org dateModified from this. It was absent
       // from the payload, so the field was built (web#216) and could never
@@ -1987,6 +2008,8 @@ export class ProductsService {
                 seller: {
                   select: {
                     companyName: true,
+                    // Decides whether this listing carries Yukizi shipping or the seller's own.
+                    selfShipEnabled: true,
                     city: true,
                     state: true,
                     rating: true,
@@ -2005,6 +2028,8 @@ export class ProductsService {
                     seller: {
                       select: {
                         companyName: true,
+                        // Decides whether this listing carries Yukizi shipping or the seller's own.
+                        selfShipEnabled: true,
                         city: true,
                         state: true,
                         rating: true,
