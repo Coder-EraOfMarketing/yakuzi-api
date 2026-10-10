@@ -10,6 +10,12 @@
  *
  * `cart.getCart` and `products.validateIds` both use `select` and both name
  * the field for this reason.
+ *
+ * `products.findOwnProduct` is the inverse trap: it deliberately runs a bare
+ * `findFirst` with no `select` at all. `update()`'s guard falls back to the
+ * stored row whenever an edit omits `preOrderDeliveryDate`, so narrowing that
+ * query — an entirely ordinary optimisation — would make every partial edit
+ * of a pre-order look like an ordinary listing and write its stock away.
  */
 export interface PreOrderable {
   preOrderDeliveryDate?: Date | string | null;
@@ -30,4 +36,16 @@ export function isPreOrder(offer: PreOrderable | null | undefined): boolean {
   // Loose `!= null` on purpose: it catches both a stored null and an absent
   // key in one comparison. See the note on PreOrderable about the latter.
   return offer?.preOrderDeliveryDate != null;
+}
+
+/**
+ * The submitted date, ready for Prisma.
+ *
+ * The wire carries a string and the column is a DateTime, so every write path
+ * has to coerce. Doing it here keeps the five persist sites from each picking
+ * their own answer for what an absent date means — it is `null`, which clears
+ * the column and so turns pre-order off.
+ */
+export function toPreOrderDate(src: PreOrderable): Date | null {
+  return src.preOrderDeliveryDate ? new Date(src.preOrderDeliveryDate) : null;
 }

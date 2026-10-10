@@ -20,7 +20,7 @@ import { CreateProductRequestDto } from './dto/create-product-request.dto';
 import { BulkCreateProductDto } from './dto/bulk-create-product.dto';
 import { MailService } from '../mail/mail.service';
 import { OfferShipping, resolveOfferShipping } from '../../common/utils/shipping.util';
-import { isPreOrder } from '../../common/utils/pre-order.util';
+import { isPreOrder, toPreOrderDate } from '../../common/utils/pre-order.util';
 
 /**
  * Match a catalog product by a condition on its seller offers.
@@ -340,14 +340,18 @@ export class ProductsService {
                 return normalized.discountMeta ?? undefined;
               })(),
               deliveryText: normalized.deliveryText,
-              preOrderDeliveryDate: normalized.preOrderDeliveryDate
-                ? new Date(normalized.preOrderDeliveryDate)
-                : null,
+              preOrderDeliveryDate: toPreOrderDate(normalized),
             },
             include: { category: true, subCategory: true },
           });
 
-          if (normalized.preOrderDeliveryDate == null) {
+          // This variant offer already exists, so the figure below is a real
+          // one the seller is relying on. The guard is about the listing being
+          // a pre-order, not about the quantity: a pre-order has no tracked
+          // stock, and the per-variant input is disabled for one, so
+          // `v.available` arrives empty and the fallback would write the
+          // form's 0 over whatever was there.
+          if (!isPreOrder(normalized)) {
             await this.inventoryService.updateDefaultBatch(
               product.id,
               v.available > 0 ? v.available : normalized.stock,
@@ -385,9 +389,7 @@ export class ProductsService {
             finalShippingPrice: v.finalShippingPrice !== undefined ? Number(v.finalShippingPrice) : (normalized.finalShippingPrice ?? null),
             minimumOrderQuantity: normalized.minimumOrderQuantity ?? 1,
             maximumOrderQuantity: normalized.maximumOrderQuantity,
-            preOrderDeliveryDate: normalized.preOrderDeliveryDate
-              ? new Date(normalized.preOrderDeliveryDate)
-              : null,
+            preOrderDeliveryDate: toPreOrderDate(normalized),
             discountType: normalized.discountType ?? undefined,
             discountMeta: (() => {
               if (v.discountPercent && Number(v.discountPercent) > 0) {
@@ -407,6 +409,13 @@ export class ProductsService {
             include: { category: true, subCategory: true },
           });
 
+          // Deliberately NOT guarded for pre-orders, unlike the update
+          // branch above. This offer is brand new, so there is no prior figure
+          // to destroy and the submitted 0 is harmless. The row must exist:
+          // unticking pre-order later needs a batch to update, and every
+          // reader asks `isPreOrder` first rather than inferring from a
+          // missing batch. Guarding this would leave a pre-order with no
+          // DEFAULT row at all — worse than a wrong number.
           await this.inventoryService.createDefaultBatch(
             product.id,
             v.available > 0 ? v.available : normalized.stock,
@@ -481,16 +490,17 @@ export class ProductsService {
           discountType: normalized.discountType,
           discountMeta: normalized.discountMeta ?? undefined,
           deliveryText: normalized.deliveryText,
-          preOrderDeliveryDate: normalized.preOrderDeliveryDate
-            ? new Date(normalized.preOrderDeliveryDate)
-            : null,
+          preOrderDeliveryDate: toPreOrderDate(normalized),
         },
         include: { category: true, subCategory: true },
       });
-      // Same reason as every other stock write on this feature: the form
-      // sends 0 for a pre-order, and letting that through would overwrite the
-      // real figure this listing already had.
-      if (normalized.preOrderDeliveryDate == null) {
+      // A create that collides on name updates a listing the seller already
+      // owns, so the batch below holds a real figure. The form sends 0 for a
+      // pre-order, and writing that through would destroy it — leaving an
+      // empty shelf when they untick pre-order. The guards on the two update
+      // branches of create() exist for this; the createDefaultBatch calls on
+      // the genuine-create branches are unguarded on purpose, see there.
+      if (!isPreOrder(normalized)) {
         await this.inventoryService.updateDefaultBatch(product.id, normalized.stock);
       }
       await this.recalculateFinalCustomerPayable(product.id);
@@ -520,9 +530,7 @@ export class ProductsService {
         finalShippingPrice: normalized.finalShippingPrice ?? null,
         minimumOrderQuantity: normalized.minimumOrderQuantity ?? 1,
         maximumOrderQuantity: normalized.maximumOrderQuantity,
-        preOrderDeliveryDate: normalized.preOrderDeliveryDate
-          ? new Date(normalized.preOrderDeliveryDate)
-          : null,
+        preOrderDeliveryDate: toPreOrderDate(normalized),
         discountType: normalized.discountType,
         discountMeta: normalized.discountMeta ?? undefined,
         deliveryText: normalized.deliveryText,
@@ -540,6 +548,10 @@ export class ProductsService {
         },
       });
 
+      // Deliberately NOT guarded for pre-orders — same reasoning as the
+      // variants create branch above: a brand-new offer has no prior figure to
+      // destroy, so the submitted 0 is harmless, and the DEFAULT row has to
+      // exist for unticking pre-order to have something to update.
       await this.inventoryService.createDefaultBatch(product.id, normalized.stock);
       await this.recalculateFinalCustomerPayable(product.id);
     }
@@ -619,9 +631,7 @@ export class ProductsService {
         discountType: dto.discountType,
         discountMeta: dto.discountMeta ?? undefined,
         deliveryText: dto.deliveryText,
-        preOrderDeliveryDate: dto.preOrderDeliveryDate
-          ? new Date(dto.preOrderDeliveryDate)
-          : null,
+        preOrderDeliveryDate: toPreOrderDate(dto),
         isActive: true,
         deletedAt: null,
       },
@@ -637,7 +647,13 @@ export class ProductsService {
       // await this.prisma.catalogProductImage.createMany
     }
 
-    if (dto.preOrderDeliveryDate == null) {
+    // Read off the payload alone, with no fallback to the stored row — unlike
+    // update(). An import is a full-row replace, not a patch: this method
+    // force-writes name, mrp, isActive and deletedAt the same way, so an
+    // absent date here really does mean "not a pre-order" rather than "leave
+    // whatever was there". The write above has already cleared the column to
+    // match, which keeps the two consistent.
+    if (!isPreOrder(dto)) {
       await this.inventoryService.updateDefaultBatch(productId, dto.stock);
     }
 
@@ -827,6 +843,7 @@ export class ProductsService {
       extraFields,
       categoryId,
       subCategoryId,
+      preOrderDeliveryDate,
       ...productData
     } = dto;
 
@@ -868,6 +885,15 @@ export class ProductsService {
 
     const updateData: Prisma.SellerOfferUpdateInput = {
       ...productData,
+      // Named explicitly rather than left to ride along in the rest-spread,
+      // so the wire's string becomes a Date like every other DateTime this
+      // service writes. `@IsDateString()` is `isISO8601` with default options,
+      // which also admits '20261215' and '2026-12' — forms `new Date()` turns
+      // into Invalid Date and that Prisma has no documented contract for.
+      // An absent key stays absent, so a partial edit cannot clear the column.
+      ...(preOrderDeliveryDate !== undefined
+        ? { preOrderDeliveryDate: toPreOrderDate(dto) }
+        : {}),
       ...(catalogueShipping ?? {}),
       ...(categoryId ? { category: { connect: { id: categoryId } } } : {}),
       ...(subCategoryId
@@ -901,10 +927,16 @@ export class ProductsService {
     // exactly as it was and simply ignored for as long as the date is set.
     // The waitlist ping goes with it — nobody is waiting for restock on a
     // listing that never sold out.
+    //
+    // Why consult the stored row and not just the payload: update() is a
+    // patch, so an edit that changes only the price carries no date at all.
+    // Reading the payload alone would call that absent key "not a pre-order"
+    // and write the stock away. This is the only case the two arms differ on
+    // — an explicit null is correctly "off" either way.
     const nowPreOrder =
       dto.preOrderDeliveryDate !== undefined
-        ? dto.preOrderDeliveryDate != null
-        : isPreOrder(product);
+        ? dto.preOrderDeliveryDate != null // the edit decides: a date on, an explicit null off
+        : isPreOrder(product); // key absent: the seller did not touch pre-order
 
     if (stock !== undefined && !nowPreOrder) {
       await this.inventoryService.updateDefaultBatch(product.id, stock);

@@ -7,13 +7,16 @@ import { ProductsService } from './products.service';
  * seller had, and untoggling pre-order would bring them back to an empty
  * shelf. The batch must be left alone and ignored while the date is set.
  *
- * The tri-state matters: an explicit `null` means "pre-order off", and the
- * stock write SHOULD run then. A naive `if (dto.preOrderDeliveryDate)` guard
- * gets cases 2 and 3 wrong in opposite directions.
+ * `update()` reads the payload when it says something and the stored row when
+ * it does not. The fallback earns its keep on exactly one case: a partial edit
+ * that omits the key entirely. A payload-only `== null` check would read that
+ * absent key as "not a pre-order" and write the stock away. An explicit `null`
+ * needs no help — it is "off" under either reading, and the write should run.
  */
 describe('ProductsService pre-order persistence and stock guards', () => {
   const build = (stored: { preOrderDeliveryDate: Date | null }) => {
     const updateDefaultBatch = jest.fn();
+    const createDefaultBatch = jest.fn();
     const offer = { id: 'offer-1', sellerId: 'seller-1', ...stored };
     const prisma = {
       sellerProfile: { findUnique: jest.fn().mockResolvedValue({ id: 'seller-1', selfShipEnabled: true }) },
@@ -21,6 +24,7 @@ describe('ProductsService pre-order persistence and stock guards', () => {
         findFirst: jest.fn().mockResolvedValue(offer),
         findUnique: jest.fn().mockResolvedValue({ ...offer, variant: null }),
         update: jest.fn().mockResolvedValue({ id: 'offer-1' }),
+        create: jest.fn().mockResolvedValue({ id: 'new-offer-1' }),
       },
       catalogProduct: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -32,7 +36,7 @@ describe('ProductsService pre-order persistence and stock guards', () => {
     };
     const service = new ProductsService(
       prisma as never,
-      { updateDefaultBatch } as never,
+      { updateDefaultBatch, createDefaultBatch } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -41,68 +45,91 @@ describe('ProductsService pre-order persistence and stock guards', () => {
     stub.recalculateFinalCustomerPayable = jest.fn();
     stub.revalidateOffer = jest.fn();
     stub.notifyWaitlistedUsers = jest.fn().mockResolvedValue(undefined);
-    return { service, prisma, updateDefaultBatch };
+    return { service, prisma, updateDefaultBatch, createDefaultBatch };
   };
 
   const ordinary = { preOrderDeliveryDate: null };
   const storedPreOrder = { preOrderDeliveryDate: new Date('2026-12-01T00:00:00.000Z') };
 
-  it('leaves the batch untouched when the edit sets a pre-order date', async () => {
-    const { service, updateDefaultBatch } = build(ordinary);
+  describe('update() — the tri-state guard', () => {
+    it('leaves the batch untouched when the edit sets a pre-order date', async () => {
+      const { service, updateDefaultBatch } = build(ordinary);
 
-    await service.update('user-1', 'offer-1', {
-      stock: 0,
-      preOrderDeliveryDate: '2026-12-01',
-    } as never);
+      await service.update('user-1', 'offer-1', {
+        stock: 0,
+        preOrderDeliveryDate: '2026-12-01',
+      } as never);
 
-    expect(updateDefaultBatch).not.toHaveBeenCalled();
-  });
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+    });
 
-  it('writes stock when the edit clears the date — pre-order turned off', async () => {
-    // The case the naive guard gets wrong: `null` is falsy, so a truthiness
-    // check would skip the write and strand the listing at its old stock.
-    const { service, updateDefaultBatch } = build(storedPreOrder);
+    it('writes stock when the edit clears the date — pre-order turned off', async () => {
+      const { service, updateDefaultBatch } = build(storedPreOrder);
 
-    await service.update('user-1', 'offer-1', {
-      stock: 7,
-      preOrderDeliveryDate: null,
-    } as never);
+      await service.update('user-1', 'offer-1', {
+        stock: 7,
+        preOrderDeliveryDate: null,
+      } as never);
 
-    expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 7);
-  });
+      expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 7);
+    });
 
-  it('falls back to the stored date when the edit omits the field', async () => {
-    // A partial edit (price only, say) must not quietly convert a pre-order
-    // back to tracked stock.
-    const { service, updateDefaultBatch } = build(storedPreOrder);
+    it('falls back to the stored date when the edit omits the field', async () => {
+      // The one case the stored-row fallback is needed for: a price-only edit
+      // carries no date, and reading the payload alone would call that absent
+      // key "not a pre-order" and write the stock away.
+      const { service, prisma, updateDefaultBatch } = build(storedPreOrder);
 
-    await service.update('user-1', 'offer-1', { stock: 0, mrp: 1599 } as never);
+      await service.update('user-1', 'offer-1', { stock: 0, mrp: 1599 } as never);
 
-    expect(updateDefaultBatch).not.toHaveBeenCalled();
-  });
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+      // An omitted key must stay omitted, not be written as null — a partial
+      // edit cannot be allowed to turn pre-order off as a side effect.
+      const { data } = (prisma.sellerOffer.update as jest.Mock).mock.calls[0][0];
+      expect('preOrderDeliveryDate' in data).toBe(false);
+    });
 
-  it('still writes stock for an ordinary listing, exactly as before', async () => {
-    const { service, updateDefaultBatch } = build(ordinary);
+    it('still writes stock for an ordinary listing, exactly as before', async () => {
+      const { service, updateDefaultBatch } = build(ordinary);
 
-    await service.update('user-1', 'offer-1', { stock: 12 } as never);
+      await service.update('user-1', 'offer-1', { stock: 12 } as never);
 
-    expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 12);
-  });
+      expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 12);
+    });
 
-  it('persists the date through the rest-spread, without a stock write', async () => {
-    // update() never names the field: it rides along in `...productData`.
-    const { service, prisma } = build(ordinary);
+    it('converts the submitted date to a Date, without a stock write', async () => {
+      // Handed to Prisma as a Date like every other DateTime this service
+      // writes, rather than the raw ISO string the wire sent.
+      const { service, prisma } = build(ordinary);
 
-    await service.update('user-1', 'offer-1', {
-      stock: 0,
-      preOrderDeliveryDate: '2026-12-01',
-    } as never);
+      await service.update('user-1', 'offer-1', {
+        stock: 0,
+        preOrderDeliveryDate: '2026-12-01',
+      } as never);
 
-    expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ preOrderDeliveryDate: '2026-12-01' }),
-      }),
-    );
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            preOrderDeliveryDate: new Date('2026-12-01'),
+          }),
+        }),
+      );
+    });
+
+    it('clears the column when the edit turns pre-order off', async () => {
+      const { service, prisma } = build(storedPreOrder);
+
+      await service.update('user-1', 'offer-1', {
+        stock: 7,
+        preOrderDeliveryDate: null,
+      } as never);
+
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ preOrderDeliveryDate: null }),
+        }),
+      );
+    });
   });
 
   /**
@@ -264,6 +291,59 @@ describe('ProductsService pre-order persistence and stock guards', () => {
           }),
         }),
       );
+    });
+  });
+
+  /**
+   * Four of the six batch writes are guarded; the two createDefaultBatch calls
+   * on the genuine-create branches are NOT, on purpose. A brand-new offer has
+   * no prior figure to destroy, so the form's 0 is harmless, and the DEFAULT
+   * row has to exist: unticking pre-order later needs something to update, and
+   * every reader asks `isPreOrder` first rather than inferring from a missing
+   * batch. Someone "finishing the job" by guarding these would leave a
+   * pre-order with no batch row at all — worse than a wrong number — and
+   * without these two tests nothing would go red.
+   */
+  describe('the create branches, deliberately unguarded', () => {
+    const newListing = (extra: Record<string, unknown>) => ({
+      name: 'Mikasa Ackerman 1/8',
+      manufacturer: 'Good Smile',
+      categoryId: 'cat-1',
+      subCategoryId: 'sub-1',
+      mrp: 2499,
+      gstPercent: 18,
+      ...extra,
+    });
+
+    it('seeds a batch row for a brand-new pre-order (default flow)', async () => {
+      const { service, prisma, createDefaultBatch, updateDefaultBatch } = build(ordinary);
+      // Nothing to collide with, so create() takes the genuine-create branch.
+      prisma.sellerOffer.findFirst.mockResolvedValue(null);
+
+      await service.create(
+        'user-1',
+        newListing({ stock: 0, preOrderDeliveryDate: '2026-12-01' }) as never,
+      );
+
+      expect(createDefaultBatch).toHaveBeenCalledWith('new-offer-1', 0);
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+    });
+
+    it('seeds a batch row for a brand-new pre-order (variants flow)', async () => {
+      const { service, prisma, createDefaultBatch, updateDefaultBatch } = build(ordinary);
+      prisma.sellerOffer.findFirst.mockResolvedValue(null);
+
+      await service.create(
+        'user-1',
+        newListing({
+          stock: 0,
+          preOrderDeliveryDate: '2026-12-01',
+          variants: [{ name: 'Deluxe', price: 0, available: 0 }],
+        }) as never,
+      );
+
+      expect(createDefaultBatch).toHaveBeenCalledWith('new-offer-1', 0);
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
     });
   });
 });
