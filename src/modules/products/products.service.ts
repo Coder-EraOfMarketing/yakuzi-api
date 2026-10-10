@@ -1104,6 +1104,12 @@ export class ProductsService {
               finalShippingPrice: true,
               finalCustomerPayable: true,
               isTaxIncluded: true,
+              // A pre-order card has no batch stock at all, so without this the
+              // grid reports stock 0 and nothing else — indistinguishable from
+              // sold out, and the storefront renders it unavailable. The date
+              // IS the pre-order flag (see isPreOrder), and a `select` that
+              // omits the column answers "not a pre-order" with no error.
+              preOrderDeliveryDate: true,
               batches: {
                 where: { stock: { gt: 0 } },
                 select: {
@@ -1130,6 +1136,12 @@ export class ProductsService {
                   finalShippingPrice: true,
                   finalCustomerPayable: true,
                   isTaxIncluded: true,
+                  // Same reason as the direct relation above. A variant's offer
+                  // can be the cheapest one on the card, so this block has to
+                  // name the column too — collectListings() prefers the variant
+                  // copy, so forgetting it here hides the date on exactly the
+                  // offers the card ends up quoting.
+                  preOrderDeliveryDate: true,
                   batches: {
                     where: { stock: { gt: 0 } },
                     select: {
@@ -1731,6 +1743,12 @@ export class ProductsService {
       isBestSeller: m.isBestSeller || false,
       isAd: m.isAd || false,
       stock: bestOffer ? (bestOffer.stock ?? 0) : 0,
+      // The promised date of the SAME offer the card quotes a price for, so
+      // `stock` and this field describe one listing rather than two. `stock: 0`
+      // stays the truth — a pre-order has no batch stock — and the storefront's
+      // rule is `isPreOrder(card) || stock > 0`, so this date is what tells
+      // "not made yet" apart from "sold out". Null for an ordinary listing.
+      preOrderDeliveryDate: bestOffer?.preOrderDeliveryDate ?? null,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
     };
@@ -1805,6 +1823,14 @@ export class ProductsService {
       stock: sellerListing
         ? (sellerListing.batches || []).reduce((sum: number, b: any) => sum + b.stock, 0)
         : (bestListing ? (bestListing.batches || []).reduce((sum: number, b: any) => sum + b.stock, 0) : 0),
+      // Deliberately the same ternary as `stock` above, not a
+      // `sellerListing?.x ?? bestListing?.x` chain: when the URL names a
+      // listing, that listing is the whole answer. Falling through to the
+      // cheapest one would pair an ordinary listing's `stock: 0` with some
+      // other seller's pre-order date and promise a delivery nobody offered.
+      preOrderDeliveryDate: sellerListing
+        ? (sellerListing.preOrderDeliveryDate ?? null)
+        : (bestListing?.preOrderDeliveryDate ?? null),
       // Group seller listings
       listings: allListings.map((p: any) => {
         const batches = p.batches || [];
@@ -1834,6 +1860,11 @@ export class ProductsService {
             shippingGstPercent: p.shippingGstPercent,
             variantName: p.variantName,
             stock,
+            // The buyer page picks ONE entry from this list and reads price,
+            // stock, seller and now this date off it. Without the field here
+            // the seller picker could only ever show a pre-order as sold out,
+            // because `stock` is legitimately 0 for one.
+            preOrderDeliveryDate: p.preOrderDeliveryDate ?? null,
             expiryDate: batches.length > 0 ? batches[0].expiryDate : null,
             seller: p.seller,
             sellerName: p.seller?.companyName,
@@ -1853,6 +1884,15 @@ export class ProductsService {
           offers.length > 0
             ? Math.min(...offers.map((o: any) => o.mrp))
             : v.options?.price || 0;
+        // The offer `minPrice` came from. `mrp` is a Prisma Decimal, so it is
+        // compared through Number() — the same coercion Math.min just did
+        // above — rather than by identity, which would never match.
+        const pricedOffer =
+          offers.length > 0
+            ? offers.reduce((prev: any, curr: any) =>
+                Number(prev.mrp) <= Number(curr.mrp) ? prev : curr,
+              )
+            : null;
         const totalStock = offers.reduce(
           (sum: number, o: any) =>
             sum +
@@ -1872,6 +1912,10 @@ export class ProductsService {
               : v.options?.available
                 ? v.options.available.toString()
                 : '0',
+          // `available` is summed from batches, so a pre-order variant is
+          // honestly '0' and the picker would grey it out. Carry the date of
+          // the same offer `price` came from, so one listing answers both.
+          preOrderDeliveryDate: pricedOffer?.preOrderDeliveryDate ?? null,
           image: v.options?.image || null,
           sku: v.sku || v.options?.sku || '',
           serialNo: v.serialNo || '',
