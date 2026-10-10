@@ -20,6 +20,7 @@ import { CreateProductRequestDto } from './dto/create-product-request.dto';
 import { BulkCreateProductDto } from './dto/bulk-create-product.dto';
 import { MailService } from '../mail/mail.service';
 import { OfferShipping, resolveOfferShipping } from '../../common/utils/shipping.util';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 
 /**
  * Match a catalog product by a condition on its seller offers.
@@ -379,6 +380,9 @@ export class ProductsService {
             finalShippingPrice: v.finalShippingPrice !== undefined ? Number(v.finalShippingPrice) : (normalized.finalShippingPrice ?? null),
             minimumOrderQuantity: normalized.minimumOrderQuantity ?? 1,
             maximumOrderQuantity: normalized.maximumOrderQuantity,
+            preOrderDeliveryDate: normalized.preOrderDeliveryDate
+              ? new Date(normalized.preOrderDeliveryDate)
+              : null,
             discountType: normalized.discountType ?? undefined,
             discountMeta: (() => {
               if (v.discountPercent && Number(v.discountPercent) > 0) {
@@ -503,6 +507,9 @@ export class ProductsService {
         finalShippingPrice: normalized.finalShippingPrice ?? null,
         minimumOrderQuantity: normalized.minimumOrderQuantity ?? 1,
         maximumOrderQuantity: normalized.maximumOrderQuantity,
+        preOrderDeliveryDate: normalized.preOrderDeliveryDate
+          ? new Date(normalized.preOrderDeliveryDate)
+          : null,
         discountType: normalized.discountType,
         discountMeta: normalized.discountMeta ?? undefined,
         deliveryText: normalized.deliveryText,
@@ -599,6 +606,9 @@ export class ProductsService {
         discountType: dto.discountType,
         discountMeta: dto.discountMeta ?? undefined,
         deliveryText: dto.deliveryText,
+        preOrderDeliveryDate: dto.preOrderDeliveryDate
+          ? new Date(dto.preOrderDeliveryDate)
+          : null,
         isActive: true,
         deletedAt: null,
       },
@@ -614,7 +624,9 @@ export class ProductsService {
       // await this.prisma.catalogProductImage.createMany
     }
 
-    await this.inventoryService.updateDefaultBatch(productId, dto.stock);
+    if (dto.preOrderDeliveryDate == null) {
+      await this.inventoryService.updateDefaultBatch(productId, dto.stock);
+    }
 
     // Every other write path does this; this one never did, so an import that
     // changed the price or the shipping left the stored finalCustomerPayable --
@@ -870,7 +882,18 @@ export class ProductsService {
       }
     }
 
-    if (stock !== undefined) {
+    // A pre-order has no tracked stock, and the form sends 0 for one. Writing
+    // that 0 through would destroy the real figure the seller had, so turning
+    // pre-order off again would come back to an empty shelf. The batch is left
+    // exactly as it was and simply ignored for as long as the date is set.
+    // The waitlist ping goes with it — nobody is waiting for restock on a
+    // listing that never sold out.
+    const nowPreOrder =
+      dto.preOrderDeliveryDate !== undefined
+        ? dto.preOrderDeliveryDate != null
+        : isPreOrder(product);
+
+    if (stock !== undefined && !nowPreOrder) {
       await this.inventoryService.updateDefaultBatch(product.id, stock);
 
       if (stock !== undefined && stock > 0) {
