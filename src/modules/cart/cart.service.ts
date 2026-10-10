@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 
 @Injectable()
 export class CartService {
@@ -110,12 +111,21 @@ export class CartService {
       );
     }
 
-    // 5. Validate stock availability across all batches
-    const totalStock = sellerOffer.batches.reduce((sum, b) => sum + b.stock, 0);
-    if (quantity > totalStock) {
-      throw new BadRequestException(
-        `Insufficient stock. Only ${totalStock} units available`,
+    // 5. Validate stock availability across all batches.
+    // Skipped for a pre-order: it has no tracked stock by definition, so there
+    // is no number to compare against and the quantity is unlimited. The
+    // per-order minimum and maximum checked above still apply — unlimited in
+    // total is not unlimited per order.
+    if (!isPreOrder(sellerOffer)) {
+      const totalStock = sellerOffer.batches.reduce(
+        (sum, b) => sum + b.stock,
+        0,
       );
+      if (quantity > totalStock) {
+        throw new BadRequestException(
+          `Insufficient stock. Only ${totalStock} units available`,
+        );
+      }
     }
 
     // 6. Get or create cart
@@ -164,6 +174,10 @@ export class CartService {
             maximumOrderQuantity: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
+            // The client cannot tell a pre-order from a sold-out listing
+            // otherwise: both report stock 0. A `select` drops what it does
+            // not name, so all three cart endpoints name this one.
+            preOrderDeliveryDate: true,
 
             batches: {
               where: { stock: { gt: 0 } },
@@ -233,6 +247,11 @@ export class CartService {
 
                 isActive: true,
                 deletedAt: true,
+                // Named explicitly because this block is a `select`: an
+                // unnamed column arrives as undefined, every pre-order line
+                // would look like an ordinary out-of-stock one, and the bag
+                // would quietly delete it.
+                preOrderDeliveryDate: true,
 
                 batches: {
                   where: { stock: { gt: 0 } },
@@ -309,7 +328,9 @@ export class CartService {
         !item.sellerOffer.isActive ||
         !!item.sellerOffer.deletedAt ||
         masterGone ||
-        stock <= 0;
+        // The stock reason, and ONLY the stock reason, does not apply to a
+        // pre-order. Every other reason above still drops the line.
+        (!isPreOrder(item.sellerOffer) && stock <= 0);
       if (isStale) staleItemIds.push(item.id);
       return !isStale;
     });
@@ -414,15 +435,21 @@ export class CartService {
       );
     }
 
-    // 5. Validate stock
-    const totalStock = cartItem.sellerOffer.batches.reduce(
-      (sum, b) => sum + b.stock,
-      0,
-    );
-    if (quantity > totalStock) {
-      throw new BadRequestException(
-        `Insufficient stock. Only ${totalStock} units available`,
+    // 5. Validate stock.
+    // Skipped for a pre-order: it has no tracked stock by definition, so there
+    // is no number to compare against and the quantity is unlimited. The
+    // per-order minimum and maximum checked above still apply — unlimited in
+    // total is not unlimited per order.
+    if (!isPreOrder(cartItem.sellerOffer)) {
+      const totalStock = cartItem.sellerOffer.batches.reduce(
+        (sum, b) => sum + b.stock,
+        0,
       );
+      if (quantity > totalStock) {
+        throw new BadRequestException(
+          `Insufficient stock. Only ${totalStock} units available`,
+        );
+      }
     }
 
     // 6. Update quantity
@@ -441,6 +468,9 @@ minimumOrderQuantity: true,
             maximumOrderQuantity: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
+            // Named for the same reason as in addToCart: stock 0 alone cannot
+            // distinguish a pre-order, and a `select` drops what it omits.
+            preOrderDeliveryDate: true,
 
             batches: {
               where: { stock: { gt: 0 } },
@@ -551,6 +581,11 @@ minimumOrderQuantity: true,
     // Remove variant/catalogProduct/batches to keep the response clean, attach
     // a flat images array and the total available stock summed across in-stock
     // batches.
+    // `preOrderDeliveryDate` rides `...rest` and must keep doing so: a
+    // pre-order's `stock` below is a truthful 0, so the date is the only thing
+    // telling the client "not made yet" from "nothing left". The buyer app
+    // reads `isPreOrder(line) || stock > 0`. Every query feeding this helper
+    // therefore names the column — see the note in pre-order.util.
     const { variant, catalogProduct, batches, ...rest } = sellerOffer;
     return {
       ...rest,

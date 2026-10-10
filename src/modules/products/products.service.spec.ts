@@ -146,7 +146,9 @@ describe('ProductsService.validateIds', () => {
 
     const result = await service.validateIds(['offer-1']);
 
-    expect(result).toEqual([{ id: 'offer-1', price: 90, mrp: 100, stock: 5 }]);
+    expect(result).toEqual([
+      { id: 'offer-1', price: 90, mrp: 100, stock: 5, preOrderDeliveryDate: null },
+    ]);
   });
 
   it('falls back to mrp when finalCustomerPayable is null', async () => {

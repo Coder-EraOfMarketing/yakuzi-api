@@ -28,6 +28,7 @@ import { AdminAlertsService } from '../mail/admin-alerts.service';
 import { SellerOrderNotifierService } from './seller-order-notifier.service';
 import { InventoryService } from '../products/services/inventory.service';
 import { IntegrationEventsService } from '../integrations/integration-events.service';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 
 /**
  * Fields a seller may still write once the admin has locked shipping.
@@ -694,6 +695,21 @@ export class OrdersService {
       select: { referralCodeId: true },
     });
 
+    // A pre-order cannot share an order with an in-stock item.
+    //
+    // orderStatus lives on Order, not OrderItem, and settlement is created
+    // for the whole order when it turns DELIVERED. A mixed order would hold
+    // an item the buyer has already paid for under one status until the
+    // pre-order arrived months later, and neither seller would be settled
+    // until then.
+    const preOrderLines = cart.items.filter((i) => isPreOrder(i.sellerOffer));
+    if (preOrderLines.length > 0 && preOrderLines.length !== cart.items.length) {
+      const names = preOrderLines.map((i) => `"${i.sellerOffer.name}"`).join(', ');
+      throw new BadRequestException(
+        `Pre-order items must be ordered on their own. Either remove ${names} from your bag, or order only those.`,
+      );
+    }
+
     // 2. Validate every cart item
     for (const item of cart.items) {
       const { sellerOffer: product } = item;
@@ -704,11 +720,16 @@ export class OrdersService {
         );
       }
 
-      const totalStock = product.batches.reduce((sum, b) => sum + b.stock, 0);
-      if (item.quantity > totalStock) {
-        throw new BadRequestException(
-          `Insufficient stock for "${product.name}". Only ${totalStock} units available.`,
-        );
+      // A pre-order has no tracked stock, so there is no figure to check the
+      // requested quantity against — batches are legitimately empty and the
+      // quantity is unlimited.
+      if (!isPreOrder(product)) {
+        const totalStock = product.batches.reduce((sum, b) => sum + b.stock, 0);
+        if (item.quantity > totalStock) {
+          throw new BadRequestException(
+            `Insufficient stock for "${product.name}". Only ${totalStock} units available.`,
+          );
+        }
       }
 
       // Charge the seller's CURRENT price, not whatever was snapshotted into
@@ -783,6 +804,10 @@ export class OrdersService {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           totalPrice: item.quantity * Number(item.unitPrice),
+          // Snapshot, not a lookup. The seller may move the listing's date
+          // later; what this buyer was promised must not move with it. Same
+          // rule as Order.fulfillmentMode.
+          preOrderDeliveryDate: item.sellerOffer.preOrderDeliveryDate ?? null,
         }));
 
         await tx.orderItem.createMany({ data: orderItemsData });
@@ -802,6 +827,18 @@ export class OrdersService {
 
         // 4d. Reduce stock, oldest batch first
         for (const item of sellerItems) {
+          // Nothing was reserved for a pre-order, so there is nothing to
+          // take. Skipping the push as well keeps the connected sales
+          // channels from being told about a stock change that did not
+          // happen.
+          //
+          // Reads the live offer, unlike cancelOrder's matching guard, which
+          // reads the OrderItem's snapshot: at the point of sale the listing
+          // *is* the truth — the snapshot does not exist yet, it is written a
+          // few lines above from this same object. By cancellation time the
+          // listing may have drifted, so only the snapshot is reliable there.
+          if (isPreOrder(item.sellerOffer)) continue;
+
           let remaining = item.quantity;
 
           for (const batch of item.sellerOffer.batches) {
@@ -904,6 +941,14 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Defensive, not load-bearing here: nothing in this read makes
+                // a stock decision, and `items` are included whole, so a
+                // client already has the authoritative snapshot alongside.
+                // Named anyway because `isPreOrder` on an untyped row — this
+                // file has an `any`-typed item map, see getOrderDetail — would
+                // read an absent key as `false` with nothing to flag it. On a
+                // typed Prisma row the compiler catches that (TS2559).
+                preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
                     images: {
@@ -967,6 +1012,14 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Defensive, not load-bearing here: nothing in this read makes
+                // a stock decision, and `items` are included whole, so a
+                // client already has the authoritative snapshot alongside.
+                // Named anyway because `isPreOrder` on an untyped row — this
+                // file has an `any`-typed item map, see getOrderDetail — would
+                // read an absent key as `false` with nothing to flag it. On a
+                // typed Prisma row the compiler catches that (TS2559).
+                preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
                     images: {
@@ -1035,6 +1088,12 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Load-bearing in a way the other two are not: the response
+                // below is built by `order.items.map((item: any) => …)`, and
+                // inside that `any` an absent key reads as `false` with no
+                // compiler complaint. See the note at the matching select in
+                // checkout.
+                preOrderDeliveryDate: true,
                 gstPercent: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
@@ -1280,6 +1339,10 @@ export class OrdersService {
             name: true,
             manufacturer: true,
             mrp: true,
+            // No preOrderDeliveryDate here on purpose. This response is
+            // hand-built below and names the OrderItem's snapshot explicitly;
+            // selecting the listing's live date too would put two dates in one
+            // payload with nothing but a docstring to say which is the promise.
             catalogProduct: {
               select: {
                 images: {
@@ -1354,6 +1417,15 @@ export class OrdersService {
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
+        // The OrderItem's snapshot — the promise this buyer was actually
+        // given. This response is hand-built from a field list, so a column
+        // being on the row does not put it on the wire; it has to be named
+        // here. `product` deliberately does not carry the listing's live date:
+        // a seller dashboard rendering "promised delivery" from the listing
+        // would show whatever the seller last saved rather than what was
+        // promised, so the wrong value is left unavailable rather than merely
+        // discouraged.
+        preOrderDeliveryDate: item.preOrderDeliveryDate,
       });
       entry.sellerTotal += Number(item.totalPrice);
     }
@@ -2203,6 +2275,36 @@ export class OrdersService {
       // a cancelled order would have quietly destroyed its stock — and taken
       // the "back in stock" notification below with it.
       for (const item of order.items) {
+        // A pre-order reserved nothing, so there is nothing to give back.
+        //
+        // Read the snapshot on `item`, never the live `item.sellerOffer`. The
+        // OrderItem records what was true when this order was placed; the
+        // listing is free to have changed since, and consulting it breaks in
+        // both directions:
+        //
+        //   - the seller clears the date once the shipment lands (a supported
+        //     and expected action) and the buyer then cancels: the live offer
+        //     looks ordinary, this guard falls through, no batches exist
+        //     because a pre-order never had any, and the rescue branch below
+        //     *creates* one — stock conjured for a listing never stocked;
+        //   - the seller sets a date on an ordinary listing and the buyer then
+        //     cancels an order that really did decrement 5 units: the guard
+        //     would skip, and those 5 real units would never come back.
+        //
+        // Orders placed before pre-orders existed carry a null snapshot and so
+        // take the restock path, which is correct for them.
+        //
+        // Checkout's matching guard reads the live offer instead, and that is
+        // not an inconsistency: there the snapshot does not exist yet — the
+        // same statement that skips the decrement has just written it.
+        //
+        // The skip has to come before the create-a-batch fallback below: that
+        // branch exists to rescue units from an offer whose batch row has
+        // gone, and applied to a pre-order it would conjure stock the seller
+        // never had and put it on sale. The waitlist ping is skipped with it —
+        // nobody is waiting for restock on something that never sold out.
+        if (isPreOrder(item)) continue;
+
         const batch = item.sellerOffer.batches[0];
         if (batch) {
           await tx.productBatch.update({

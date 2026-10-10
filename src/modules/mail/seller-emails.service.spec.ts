@@ -178,6 +178,40 @@ describe('SellerEmailsService', () => {
 
       expect(mail.sendMail).not.toHaveBeenCalled();
     });
+
+    it('stays quiet about a pre-order at stock 0 — it never had stock to sell out', async () => {
+      const { service, prisma, mail } = build();
+      prisma.sellerOffer.findUnique.mockResolvedValue(
+        listing({ preOrderDeliveryDate: new Date('2026-12-01') }),
+      );
+
+      await service.sendStockAlert('offer-1', 0, 10);
+
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(prisma.emailDispatch.create).not.toHaveBeenCalled();
+    });
+
+    it('still says sold out for an ordinary offer at stock 0 (no regression)', async () => {
+      const { service, prisma, mail } = build();
+      prisma.sellerOffer.findUnique.mockResolvedValue(listing());
+
+      await service.sendStockAlert('offer-1', 0, 10);
+
+      const sent = mail.sendMail.mock.calls[0][0];
+      expect(sent.subject).toContain('Out of stock');
+      expect(sent.html).toContain('sold out');
+    });
+
+    it('still warns an ordinary offer at low-but-nonzero stock (no regression)', async () => {
+      const { service, prisma, mail } = build();
+      prisma.sellerOffer.findUnique.mockResolvedValue(listing());
+
+      await service.sendStockAlert('offer-1', 3, 10);
+
+      const sent = mail.sendMail.mock.calls[0][0];
+      expect(sent.subject).toContain('3 left');
+      expect(sent.html).toContain('Only 3 left');
+    });
   });
 
   describe('sendTicketRaised', () => {
