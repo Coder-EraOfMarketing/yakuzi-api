@@ -11,7 +11,7 @@ import { ProductsService } from './products.service';
  * stock write SHOULD run then. A naive `if (dto.preOrderDeliveryDate)` guard
  * gets cases 2 and 3 wrong in opposite directions.
  */
-describe('ProductsService update() stock guard for pre-orders', () => {
+describe('ProductsService pre-order persistence and stock guards', () => {
   const build = (stored: { preOrderDeliveryDate: Date | null }) => {
     const updateDefaultBatch = jest.fn();
     const offer = { id: 'offer-1', sellerId: 'seller-1', ...stored };
@@ -22,8 +22,13 @@ describe('ProductsService update() stock guard for pre-orders', () => {
         findUnique: jest.fn().mockResolvedValue({ ...offer, variant: null }),
         update: jest.fn().mockResolvedValue({ id: 'offer-1' }),
       },
-      catalogProduct: { findFirst: jest.fn().mockResolvedValue(null) },
+      catalogProduct: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       productBatch: { findFirst: jest.fn().mockResolvedValue(null) },
+      category: { findUnique: jest.fn().mockResolvedValue({ id: 'cat-1', name: 'Figures' }) },
+      subCategory: { findUnique: jest.fn().mockResolvedValue({ id: 'sub-1', name: 'Scale' }) },
     };
     const service = new ProductsService(
       prisma as never,
@@ -98,5 +103,56 @@ describe('ProductsService update() stock guard for pre-orders', () => {
         data: expect.objectContaining({ preOrderDeliveryDate: '2026-12-01' }),
       }),
     );
+  });
+
+  /**
+   * create() has a name-collision branch: a listing the seller already owns
+   * under the same name is UPDATED rather than created, and that path writes
+   * the DEFAULT batch of an existing row. It shipped dropping the date and
+   * wiping stock, so it is the fourth place a mistake here costs real
+   * inventory. Semantics follow the import path, not update()'s tri-state:
+   * create() sends a full payload, so no date genuinely means no pre-order.
+   */
+  describe('the name-reuse branch of create()', () => {
+    const payload = (extra: Record<string, unknown>) => ({
+      name: 'Levi Ackerman 1/7',
+      manufacturer: 'Good Smile',
+      categoryId: 'cat-1',
+      subCategoryId: 'sub-1',
+      mrp: 1599,
+      gstPercent: 18,
+      ...extra,
+    });
+
+    it('keeps the date and leaves the existing batch alone', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create(
+        'user-1',
+        payload({ stock: 0, preOrderDeliveryDate: '2026-12-01' }) as never,
+      );
+
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            preOrderDeliveryDate: new Date('2026-12-01'),
+          }),
+        }),
+      );
+    });
+
+    it('still writes stock when the payload carries no date', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create('user-1', payload({ stock: 25 }) as never);
+
+      expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 25);
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ preOrderDeliveryDate: null }),
+        }),
+      );
+    });
   });
 });

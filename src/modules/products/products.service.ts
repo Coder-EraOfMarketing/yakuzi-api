@@ -476,10 +476,18 @@ export class ProductsService {
           discountType: normalized.discountType,
           discountMeta: normalized.discountMeta ?? undefined,
           deliveryText: normalized.deliveryText,
+          preOrderDeliveryDate: normalized.preOrderDeliveryDate
+            ? new Date(normalized.preOrderDeliveryDate)
+            : null,
         },
         include: { category: true, subCategory: true },
       });
-      await this.inventoryService.updateDefaultBatch(product.id, normalized.stock);
+      // Same reason as every other stock write on this feature: the form
+      // sends 0 for a pre-order, and letting that through would overwrite the
+      // real figure this listing already had.
+      if (normalized.preOrderDeliveryDate == null) {
+        await this.inventoryService.updateDefaultBatch(product.id, normalized.stock);
+      }
       await this.recalculateFinalCustomerPayable(product.id);
     } else {
       const productData: Prisma.SellerOfferCreateInput = {
