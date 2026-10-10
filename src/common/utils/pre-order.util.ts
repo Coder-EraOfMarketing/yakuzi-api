@@ -8,8 +8,11 @@
  * this field will therefore have its stock decremented and restocked like
  * ordinary inventory.
  *
- * `cart.getCart` and `products.validateIds` both use `select` and both name
- * the field for this reason.
+ * Every narrow `select` that loads an offer has to name this column, and
+ * there are several. Deliberately not listed here: a list in a comment goes
+ * stale the moment someone adds a gate, and a stale list is worse than none
+ * because it reads as permission to skip the check. `grep -rn
+ * "preOrderDeliveryDate" src` is the honest answer.
  *
  * `products.findOwnProduct` is the inverse trap: it deliberately runs a bare
  * `findFirst` with no `select` at all. `update()`'s guard falls back to the
