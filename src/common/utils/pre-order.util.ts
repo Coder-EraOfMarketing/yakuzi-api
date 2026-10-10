@@ -1,4 +1,21 @@
 /**
+ * Loading a row with Prisma `select`? Name `preOrderDeliveryDate` explicitly.
+ *
+ * A column nobody asked for is absent, and `isPreOrder` reads an absent key
+ * exactly as it reads a stored `null` — both mean "no date", so it quietly
+ * answers `false`. There is no error and no type complaint to catch the
+ * mistake. A pre-order listing fetched through a narrow `select` that forgot
+ * this field will therefore have its stock decremented and restocked like
+ * ordinary inventory.
+ *
+ * `cart.getCart` and `products.validateIds` both use `select` and both name
+ * the field for this reason.
+ */
+export interface PreOrderable {
+  preOrderDeliveryDate?: Date | string | null;
+}
+
+/**
  * Is this listing sold as a pre-order?
  *
  * One definition, used by every stock gate, so "pre-order" cannot come to
@@ -9,19 +26,8 @@
  * buyer and snapshotted onto the order, nothing more — a date in the past
  * still means pre-order, because nothing takes a listing down automatically.
  */
-/**
- * Loading a row with Prisma `select`? Name `preOrderDeliveryDate` explicitly.
- * An omitted key and a `null` value both arrive here as `undefined` —
- * `isPreOrder` cannot tell "not a pre-order" apart from "nobody asked for the
- * column" and will quietly answer `false` either way. A pre-order listing
- * fetched through a narrow `select` that forgot this field will get its
- * stock decremented and restocked like ordinary inventory, with no error to
- * surface the mistake.
- */
-export interface PreOrderable {
-  preOrderDeliveryDate?: Date | string | null;
-}
-
 export function isPreOrder(offer: PreOrderable | null | undefined): boolean {
+  // Loose `!= null` on purpose: it catches both a stored null and an absent
+  // key in one comparison. See the note on PreOrderable about the latter.
   return offer?.preOrderDeliveryDate != null;
 }
