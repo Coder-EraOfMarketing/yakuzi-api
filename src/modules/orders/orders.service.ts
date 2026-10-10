@@ -935,6 +935,11 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Defensive, not load-bearing here: nothing in this read makes
+                // a stock decision. Named so a future `isPreOrder` on one of
+                // these rows cannot get a silent `false` off an absent key —
+                // see the note on PreOrderable.
+                preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
                     images: {
@@ -998,6 +1003,11 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Defensive, not load-bearing here: nothing in this read makes
+                // a stock decision. Named so a future `isPreOrder` on one of
+                // these rows cannot get a silent `false` off an absent key —
+                // see the note on PreOrderable.
+                preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
                     images: {
@@ -1066,6 +1076,8 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
+                // Defensive — see the note at the matching select in checkout.
+                preOrderDeliveryDate: true,
                 gstPercent: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
@@ -1311,6 +1323,8 @@ export class OrdersService {
             name: true,
             manufacturer: true,
             mrp: true,
+            // Defensive — see the note at the matching select in checkout.
+            preOrderDeliveryDate: true,
             catalogProduct: {
               select: {
                 images: {
@@ -2235,12 +2249,30 @@ export class OrdersService {
       // the "back in stock" notification below with it.
       for (const item of order.items) {
         // A pre-order reserved nothing, so there is nothing to give back.
-        // This has to come before the create-a-batch fallback below: that
+        //
+        // Read the snapshot on `item`, never the live `item.sellerOffer`. The
+        // OrderItem records what was true when this order was placed; the
+        // listing is free to have changed since, and consulting it breaks in
+        // both directions:
+        //
+        //   - the seller clears the date once the shipment lands (a supported
+        //     and expected action) and the buyer then cancels: the live offer
+        //     looks ordinary, this guard falls through, no batches exist
+        //     because a pre-order never had any, and the rescue branch below
+        //     *creates* one — stock conjured for a listing never stocked;
+        //   - the seller sets a date on an ordinary listing and the buyer then
+        //     cancels an order that really did decrement 5 units: the guard
+        //     would skip, and those 5 real units would never come back.
+        //
+        // Orders placed before pre-orders existed carry a null snapshot and so
+        // take the restock path, which is correct for them.
+        //
+        // The skip has to come before the create-a-batch fallback below: that
         // branch exists to rescue units from an offer whose batch row has
         // gone, and applied to a pre-order it would conjure stock the seller
         // never had and put it on sale. The waitlist ping is skipped with it —
         // nobody is waiting for restock on something that never sold out.
-        if (isPreOrder(item.sellerOffer)) continue;
+        if (isPreOrder(item)) continue;
 
         const batch = item.sellerOffer.batches[0];
         if (batch) {
