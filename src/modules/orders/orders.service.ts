@@ -28,6 +28,7 @@ import { AdminAlertsService } from '../mail/admin-alerts.service';
 import { SellerOrderNotifierService } from './seller-order-notifier.service';
 import { InventoryService } from '../products/services/inventory.service';
 import { IntegrationEventsService } from '../integrations/integration-events.service';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 
 /**
  * Fields a seller may still write once the admin has locked shipping.
@@ -694,6 +695,21 @@ export class OrdersService {
       select: { referralCodeId: true },
     });
 
+    // A pre-order cannot share an order with an in-stock item.
+    //
+    // orderStatus lives on Order, not OrderItem, and settlement is created
+    // for the whole order when it turns DELIVERED. A mixed order would hold
+    // an item the buyer has already paid for under one status until the
+    // pre-order arrived months later, and neither seller would be settled
+    // until then.
+    const preOrderLines = cart.items.filter((i) => isPreOrder(i.sellerOffer));
+    if (preOrderLines.length > 0 && preOrderLines.length !== cart.items.length) {
+      const names = preOrderLines.map((i) => `"${i.sellerOffer.name}"`).join(', ');
+      throw new BadRequestException(
+        `Pre-order items must be ordered on their own. Either remove ${names} from your bag, or order only those.`,
+      );
+    }
+
     // 2. Validate every cart item
     for (const item of cart.items) {
       const { sellerOffer: product } = item;
@@ -704,11 +720,16 @@ export class OrdersService {
         );
       }
 
-      const totalStock = product.batches.reduce((sum, b) => sum + b.stock, 0);
-      if (item.quantity > totalStock) {
-        throw new BadRequestException(
-          `Insufficient stock for "${product.name}". Only ${totalStock} units available.`,
-        );
+      // A pre-order has no tracked stock, so there is no figure to check the
+      // requested quantity against — batches are legitimately empty and the
+      // quantity is unlimited.
+      if (!isPreOrder(product)) {
+        const totalStock = product.batches.reduce((sum, b) => sum + b.stock, 0);
+        if (item.quantity > totalStock) {
+          throw new BadRequestException(
+            `Insufficient stock for "${product.name}". Only ${totalStock} units available.`,
+          );
+        }
       }
 
       // Charge the seller's CURRENT price, not whatever was snapshotted into
@@ -783,6 +804,10 @@ export class OrdersService {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           totalPrice: item.quantity * Number(item.unitPrice),
+          // Snapshot, not a lookup. The seller may move the listing's date
+          // later; what this buyer was promised must not move with it. Same
+          // rule as Order.fulfillmentMode.
+          preOrderDeliveryDate: item.sellerOffer.preOrderDeliveryDate ?? null,
         }));
 
         await tx.orderItem.createMany({ data: orderItemsData });
@@ -802,6 +827,12 @@ export class OrdersService {
 
         // 4d. Reduce stock, oldest batch first
         for (const item of sellerItems) {
+          // Nothing was reserved for a pre-order, so there is nothing to
+          // take. Skipping the push as well keeps the connected sales
+          // channels from being told about a stock change that did not
+          // happen.
+          if (isPreOrder(item.sellerOffer)) continue;
+
           let remaining = item.quantity;
 
           for (const batch of item.sellerOffer.batches) {
