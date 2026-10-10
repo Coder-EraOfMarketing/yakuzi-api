@@ -2234,6 +2234,14 @@ export class OrdersService {
       // a cancelled order would have quietly destroyed its stock — and taken
       // the "back in stock" notification below with it.
       for (const item of order.items) {
+        // A pre-order reserved nothing, so there is nothing to give back.
+        // This has to come before the create-a-batch fallback below: that
+        // branch exists to rescue units from an offer whose batch row has
+        // gone, and applied to a pre-order it would conjure stock the seller
+        // never had and put it on sale. The waitlist ping is skipped with it —
+        // nobody is waiting for restock on something that never sold out.
+        if (isPreOrder(item.sellerOffer)) continue;
+
         const batch = item.sellerOffer.batches[0];
         if (batch) {
           await tx.productBatch.update({
