@@ -9,6 +9,15 @@
  * buyer and snapshotted onto the order, nothing more — a date in the past
  * still means pre-order, because nothing takes a listing down automatically.
  */
+/**
+ * Loading a row with Prisma `select`? Name `preOrderDeliveryDate` explicitly.
+ * An omitted key and a `null` value both arrive here as `undefined` —
+ * `isPreOrder` cannot tell "not a pre-order" apart from "nobody asked for the
+ * column" and will quietly answer `false` either way. A pre-order listing
+ * fetched through a narrow `select` that forgot this field will get its
+ * stock decremented and restocked like ordinary inventory, with no error to
+ * surface the mistake.
+ */
 export interface PreOrderable {
   preOrderDeliveryDate?: Date | string | null;
 }
