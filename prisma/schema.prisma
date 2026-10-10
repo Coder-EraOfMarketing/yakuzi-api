@@ -300,6 +300,11 @@ model SellerOffer {
   discountType         DiscountType?
   discountMeta         Json?
   deliveryText         String?
+  /// Non-null marks this listing a pre-order: it carries no tracked stock,
+  /// and this is the date the seller has promised delivery by. Presence is
+  /// the flag on purpose — "is pre-order" and "has a promised date" are the
+  /// same fact, and a separate boolean could drift out of step with it.
+  preOrderDeliveryDate DateTime?
   approvalStatus       ProductApprovalStatus       @default(PENDING)
   rejectionReason      String?
   variantId            String?
@@ -456,19 +461,24 @@ model Order {
 }
 
 model OrderItem {
-  id            String            @id @default(uuid())
-  orderId       String
-  sellerOfferId String
-  sellerId      String
-  quantity      Int
-  unitPrice     Decimal           @db.Decimal(10, 2)
-  totalPrice    Decimal           @db.Decimal(10, 2)
-  createdAt     DateTime          @default(now())
-  legacyId      String?           @unique
-  order         Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  seller        SellerProfile     @relation(fields: [sellerId], references: [id])
-  sellerOffer   SellerOffer       @relation(fields: [sellerOfferId], references: [id])
-  settlement    SellerSettlement?
+  id                   String            @id @default(uuid())
+  orderId              String
+  sellerOfferId        String
+  sellerId             String
+  quantity             Int
+  unitPrice            Decimal           @db.Decimal(10, 2)
+  totalPrice           Decimal           @db.Decimal(10, 2)
+  /// The pre-order date as it stood when this order was placed. Snapshotted,
+  /// never re-read from the listing: a seller moving their date must not
+  /// rewrite what an existing buyer was already promised. Same rule as
+  /// Order.fulfillmentMode.
+  preOrderDeliveryDate DateTime?
+  createdAt            DateTime          @default(now())
+  legacyId             String?           @unique
+  order                Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  seller               SellerProfile     @relation(fields: [sellerId], references: [id])
+  sellerOffer          SellerOffer       @relation(fields: [sellerOfferId], references: [id])
+  settlement           SellerSettlement?
 
   // Shipping dimensions
   packageLength  Float?
