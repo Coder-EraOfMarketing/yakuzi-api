@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 
 @Injectable()
 export class CartService {
@@ -110,12 +111,21 @@ export class CartService {
       );
     }
 
-    // 5. Validate stock availability across all batches
-    const totalStock = sellerOffer.batches.reduce((sum, b) => sum + b.stock, 0);
-    if (quantity > totalStock) {
-      throw new BadRequestException(
-        `Insufficient stock. Only ${totalStock} units available`,
+    // 5. Validate stock availability across all batches.
+    // Skipped for a pre-order: it has no tracked stock by definition, so there
+    // is no number to compare against and the quantity is unlimited. The
+    // per-order minimum and maximum checked above still apply — unlimited in
+    // total is not unlimited per order.
+    if (!isPreOrder(sellerOffer)) {
+      const totalStock = sellerOffer.batches.reduce(
+        (sum, b) => sum + b.stock,
+        0,
       );
+      if (quantity > totalStock) {
+        throw new BadRequestException(
+          `Insufficient stock. Only ${totalStock} units available`,
+        );
+      }
     }
 
     // 6. Get or create cart
@@ -233,6 +243,11 @@ export class CartService {
 
                 isActive: true,
                 deletedAt: true,
+                // Named explicitly because this block is a `select`: an
+                // unnamed column arrives as undefined, every pre-order line
+                // would look like an ordinary out-of-stock one, and the bag
+                // would quietly delete it.
+                preOrderDeliveryDate: true,
 
                 batches: {
                   where: { stock: { gt: 0 } },
@@ -309,7 +324,9 @@ export class CartService {
         !item.sellerOffer.isActive ||
         !!item.sellerOffer.deletedAt ||
         masterGone ||
-        stock <= 0;
+        // The stock reason, and ONLY the stock reason, does not apply to a
+        // pre-order. Every other reason above still drops the line.
+        (!isPreOrder(item.sellerOffer) && stock <= 0);
       if (isStale) staleItemIds.push(item.id);
       return !isStale;
     });
@@ -414,15 +431,21 @@ export class CartService {
       );
     }
 
-    // 5. Validate stock
-    const totalStock = cartItem.sellerOffer.batches.reduce(
-      (sum, b) => sum + b.stock,
-      0,
-    );
-    if (quantity > totalStock) {
-      throw new BadRequestException(
-        `Insufficient stock. Only ${totalStock} units available`,
+    // 5. Validate stock.
+    // Skipped for a pre-order: it has no tracked stock by definition, so there
+    // is no number to compare against and the quantity is unlimited. The
+    // per-order minimum and maximum checked above still apply — unlimited in
+    // total is not unlimited per order.
+    if (!isPreOrder(cartItem.sellerOffer)) {
+      const totalStock = cartItem.sellerOffer.batches.reduce(
+        (sum, b) => sum + b.stock,
+        0,
       );
+      if (quantity > totalStock) {
+        throw new BadRequestException(
+          `Insufficient stock. Only ${totalStock} units available`,
+        );
+      }
     }
 
     // 6. Update quantity
