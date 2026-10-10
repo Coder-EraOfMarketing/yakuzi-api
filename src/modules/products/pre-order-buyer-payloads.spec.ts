@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { ProductsService } from './products.service';
 
 /**
@@ -224,6 +225,84 @@ describe('formatMasterDetail carries the pre-order date onto the product page', 
     expect(payload.variants[0].available).toBe('0');
     expect(payload.variants[1].preOrderDeliveryDate).toBeNull();
   });
+
+  /**
+   * `mrp` is a Prisma Decimal in production, never a plain number, and a
+   * Decimal's valueOf() returns a STRING — so `<` between two of them compares
+   * lexicographically and `new Decimal('100') < new Decimal('90')` is true.
+   * The variant entry has to pick the offer that set `price` (`Math.min`, which
+   * coerces), so its comparison coerces too. These cases are the only place in
+   * the repo where Decimal `mrp` is exercised; with plain numbers, or with a
+   * single-offer variant (a one-element `reduce` with no seed returns that
+   * element WITHOUT running the callback), the coercion has no coverage at all.
+   */
+  describe('with real Decimal prices, the variant date follows the priced offer', () => {
+    const variant = (offers: unknown[]) => ({
+      id: 'v1',
+      name: 'Small',
+      sellerOffers: offers,
+    });
+    const dec = (v: string) => new Prisma.Decimal(v);
+
+    it('emits null when the dearer of the two is the pre-order', () => {
+      // ₹90 is the price shown, and it is an ordinary in-stock listing.
+      // Comparing the Decimals raw would read '100' <= '90' as true and pick
+      // the ₹100 pre-order, advertising a delivery date on a ₹90 listing.
+      const payload = detail(
+        master([], [
+          variant([
+            preOrder({ id: 'dear-preorder', mrp: dec('100') }),
+            offer({ id: 'cheap-ordinary', mrp: dec('90') }),
+          ]),
+        ]),
+      );
+
+      expect(payload.variants[0].price).toBe('90');
+      expect(payload.variants[0].preOrderDeliveryDate).toBeNull();
+      // The batch total spans every offer on the variant, so it is positive
+      // here even though the pre-order contributes nothing.
+      expect(payload.variants[0].available).toBe('7');
+    });
+
+    it('emits the date when the cheaper of the two is the pre-order', () => {
+      const payload = detail(
+        master([], [
+          variant([
+            offer({ id: 'dear-ordinary', mrp: dec('100') }),
+            preOrder({ id: 'cheap-preorder', mrp: dec('90') }),
+          ]),
+        ]),
+      );
+
+      expect(payload.variants[0].price).toBe('90');
+      expect(payload.variants[0].preOrderDeliveryDate).toEqual(PRE_ORDER_DATE);
+    });
+
+    it('breaks a price tie by keeping the first offer (pinning today’s behaviour)', () => {
+      // Two listings at ₹90, one a pre-order. `<=` keeps the accumulator, so
+      // the first offer in the list wins. Nothing depends on which — this
+      // pins it so a later `<`/`<=` edit is a visible decision, not a drift.
+      const first = detail(
+        master([], [
+          variant([
+            preOrder({ id: 'tie-preorder', mrp: dec('90') }),
+            offer({ id: 'tie-ordinary', mrp: dec('90') }),
+          ]),
+        ]),
+      );
+      const second = detail(
+        master([], [
+          variant([
+            offer({ id: 'tie-ordinary', mrp: dec('90') }),
+            preOrder({ id: 'tie-preorder', mrp: dec('90') }),
+          ]),
+        ]),
+      );
+
+      expect(first.variants[0].preOrderDeliveryDate).toEqual(PRE_ORDER_DATE);
+      expect(second.variants[0].preOrderDeliveryDate).toBeNull();
+    });
+  });
 });
 
 /**
@@ -282,6 +361,55 @@ describe('the buyer-facing queries ask Prisma for preOrderDeliveryDate', () => {
     const product = findMany.mock.calls[0][0].include.catalogProduct.include;
     expectFetchesPreOrderDate(product.sellerOffers);
     expectFetchesPreOrderDate(product.productVariants.include.sellerOffers);
+  });
+
+  it('fetches the column on both queries of findOne’s offerId branch', async () => {
+    // /products/:offerId resolves the named listing first and then its master.
+    // The slug fallback below exercises a near-identical master query, but NOT
+    // these two — so without this case, narrowing either to a `select` would
+    // null the date on the branch whose top-level ternary quotes the named
+    // listing, with every other test in this file still green.
+    const offerFindFirst = jest.fn().mockResolvedValue({
+      id: 'offer-named',
+      catalogProductId: 'p1',
+      mrp: 900,
+      batches: [],
+      preOrderDeliveryDate: OTHER_DATE,
+    });
+    const catalogFindFirst = jest.fn().mockResolvedValue({
+      id: 'p1',
+      name: 'Thing',
+      images: [],
+      sellerOffers: [preOrder({ id: 'offer-cheap', mrp: 100 })],
+      productVariants: [],
+    });
+    const branchService = new ProductsService(
+      {
+        sellerOffer: { findFirst: offerFindFirst },
+        catalogProduct: { findFirst: catalogFindFirst },
+        review: {
+          aggregate: jest
+            .fn()
+            .mockResolvedValue({ _count: 0, _avg: { rating: null } }),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      { recordView: jest.fn() } as never,
+      {} as never,
+    );
+
+    const payload: any = await branchService.findOne('offer-named');
+
+    // The named listing itself is the root of the first query.
+    expectFetchesPreOrderDate(offerFindFirst.mock.calls[0][0]);
+    const include = catalogFindFirst.mock.calls[0][0].include;
+    expectFetchesPreOrderDate(include.sellerOffers);
+    expectFetchesPreOrderDate(include.productVariants.include.sellerOffers);
+    // End to end: the named listing answers for itself, and the master's
+    // cheaper pre-order (a different date) does not leak into the top level.
+    expect(payload.preOrderDeliveryDate).toEqual(OTHER_DATE);
+    expect(payload.listings[0].preOrderDeliveryDate).toEqual(PRE_ORDER_DATE);
   });
 
   it('fetches the column in both offer blocks of the product detail query', async () => {

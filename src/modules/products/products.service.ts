@@ -1743,11 +1743,13 @@ export class ProductsService {
       isBestSeller: m.isBestSeller || false,
       isAd: m.isAd || false,
       stock: bestOffer ? (bestOffer.stock ?? 0) : 0,
-      // The promised date of the SAME offer the card quotes a price for, so
-      // `stock` and this field describe one listing rather than two. `stock: 0`
-      // stays the truth — a pre-order has no batch stock — and the storefront's
-      // rule is `isPreOrder(card) || stock > 0`, so this date is what tells
-      // "not made yet" apart from "sold out". Null for an ordinary listing.
+      // The promised date of the offer getBestOffer() picked — the same one
+      // `mrp`, `price` and `stock` above come from, so the date and the stock
+      // figure beside it describe one listing. (Not `bestListingId`: that is a
+      // separate comparison and can name a different offer.) `stock: 0` stays
+      // the truth — a pre-order has no batch stock — and the storefront's rule
+      // is `isPreOrder(card) || stock > 0`, so this date is what tells "not
+      // made yet" apart from "sold out". Null for an ordinary listing.
       preOrderDeliveryDate: bestOffer?.preOrderDeliveryDate ?? null,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
@@ -1884,9 +1886,14 @@ export class ProductsService {
           offers.length > 0
             ? Math.min(...offers.map((o: any) => o.mrp))
             : v.options?.price || 0;
-        // The offer `minPrice` came from. `mrp` is a Prisma Decimal, so it is
-        // compared through Number() — the same coercion Math.min just did
-        // above — rather than by identity, which would never match.
+        // The offer `minPrice` came from.
+        //
+        // Number() is load-bearing. `mrp` is a Prisma Decimal, whose valueOf()
+        // returns a STRING, so `<` between two of them is a lexicographic
+        // compare: `new Decimal('100') < new Decimal('90')` is true. Coercing
+        // first is the same thing Math.min did on the line above, so this picks
+        // the offer that actually set `minPrice`; comparing raw would hand back
+        // ₹100 as the cheaper of ₹100 and ₹90, and with it the wrong date.
         const pricedOffer =
           offers.length > 0
             ? offers.reduce((prev: any, curr: any) =>
@@ -1913,8 +1920,11 @@ export class ProductsService {
                 ? v.options.available.toString()
                 : '0',
           // `available` is summed from batches, so a pre-order variant is
-          // honestly '0' and the picker would grey it out. Carry the date of
-          // the same offer `price` came from, so one listing answers both.
+          // honestly '0' and the picker would grey it out. The date belongs to
+          // the one offer `price` came from; `available` is a total across
+          // every offer on the variant, so the two are not claims about the
+          // same listing — a variant with one pre-order and one stocked offer
+          // reports both a date and a positive `available`.
           preOrderDeliveryDate: pricedOffer?.preOrderDeliveryDate ?? null,
           image: v.options?.image || null,
           sku: v.sku || v.options?.sku || '',
