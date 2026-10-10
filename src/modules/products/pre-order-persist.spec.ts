@@ -208,4 +208,62 @@ describe('ProductsService pre-order persistence and stock guards', () => {
       );
     });
   });
+
+  /**
+   * upsertExistingProduct is the CSV/externalId import path, reached when a
+   * create() carries an externalId that already exists. A flipped guard here
+   * costs not one listing's stock but every row of the import, so the guard
+   * gets a test rather than a reading.
+   *
+   * Both cases assert `deletedAt: null` alongside the date. Only this method
+   * writes that key — the name-reuse branch has the same two-branch shape and
+   * would otherwise satisfy these assertions, which is exactly the trap.
+   */
+  describe('the import path (upsertExistingProduct)', () => {
+    const importPayload = (extra: Record<string, unknown>) => ({
+      name: 'Levi Ackerman 1/7',
+      manufacturer: 'Good Smile',
+      categoryId: 'cat-1',
+      subCategoryId: 'sub-1',
+      mrp: 1599,
+      gstPercent: 18,
+      externalId: 'EXT-1',
+      ...extra,
+    });
+
+    it('keeps the date and leaves the imported row\'s batch alone', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create(
+        'user-1',
+        importPayload({ stock: 0, preOrderDeliveryDate: '2026-12-01' }) as never,
+      );
+
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            deletedAt: null,
+            preOrderDeliveryDate: new Date('2026-12-01'),
+          }),
+        }),
+      );
+    });
+
+    it('still writes the imported stock when there is no date', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create('user-1', importPayload({ stock: 40 }) as never);
+
+      expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 40);
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            deletedAt: null,
+            preOrderDeliveryDate: null,
+          }),
+        }),
+      );
+    });
+  });
 });
