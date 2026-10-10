@@ -155,4 +155,57 @@ describe('ProductsService pre-order persistence and stock guards', () => {
       );
     });
   });
+
+  /**
+   * The variants flow has the same two-branch shape, and the same hazard: a
+   * variant offer the seller already owns is updated in place. Its stock
+   * figure is the per-variant `v.available`, falling back to the form's
+   * `normalized.stock` — and the web plan disables the per-variant column for
+   * a pre-order, so `available` arrives empty and the fallback hands it the
+   * same 0. Guarded on the DTO alone, like the rest of create().
+   */
+  describe('the variant-reuse branch of create()', () => {
+    const payload = (extra: Record<string, unknown>, variant: Record<string, unknown>) => ({
+      name: 'Levi Ackerman 1/7',
+      manufacturer: 'Good Smile',
+      categoryId: 'cat-1',
+      subCategoryId: 'sub-1',
+      mrp: 1599,
+      gstPercent: 18,
+      ...extra,
+      variants: [{ name: 'Deluxe', price: 0, ...variant }],
+    });
+
+    it('keeps the date and leaves the existing variant batch alone', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create(
+        'user-1',
+        payload({ stock: 0, preOrderDeliveryDate: '2026-12-01' }, { available: 0 }) as never,
+      );
+
+      expect(updateDefaultBatch).not.toHaveBeenCalled();
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            preOrderDeliveryDate: new Date('2026-12-01'),
+          }),
+        }),
+      );
+    });
+
+    it('still writes the per-variant figure when there is no date', async () => {
+      const { service, prisma, updateDefaultBatch } = build(ordinary);
+
+      await service.create('user-1', payload({ stock: 25 }, { available: 9 }) as never);
+
+      // The per-variant figure wins over the form's stock, exactly as before.
+      expect(updateDefaultBatch).toHaveBeenCalledWith('offer-1', 9);
+      expect(prisma.sellerOffer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ preOrderDeliveryDate: null }),
+        }),
+      );
+    });
+  });
 });

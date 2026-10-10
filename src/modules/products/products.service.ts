@@ -340,14 +340,19 @@ export class ProductsService {
                 return normalized.discountMeta ?? undefined;
               })(),
               deliveryText: normalized.deliveryText,
+              preOrderDeliveryDate: normalized.preOrderDeliveryDate
+                ? new Date(normalized.preOrderDeliveryDate)
+                : null,
             },
             include: { category: true, subCategory: true },
           });
 
-          await this.inventoryService.updateDefaultBatch(
-            product.id,
-            v.available > 0 ? v.available : normalized.stock,
-          );
+          if (normalized.preOrderDeliveryDate == null) {
+            await this.inventoryService.updateDefaultBatch(
+              product.id,
+              v.available > 0 ? v.available : normalized.stock,
+            );
+          }
           await this.recalculateFinalCustomerPayable(product.id);
         } else {
           const productData: Prisma.SellerOfferCreateInput = {
