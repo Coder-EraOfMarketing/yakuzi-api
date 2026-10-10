@@ -147,6 +147,21 @@ export class CreateProductDto {
   @IsDateString()
   expiryDate?: string;
 
+  /**
+   * Non-null marks this listing a pre-order: no tracked stock, unlimited
+   * quantity, and this is the date the seller promises delivery by.
+   *
+   * `stock` is still required by this DTO and the form still sends 0 for a
+   * pre-order listing — it is simply never read for one.
+   */
+  @ApiPropertyOptional({
+    example: '2026-12-15T00:00:00.000Z',
+    description: 'Set to sell this listing as a pre-order with a promised delivery date.',
+  })
+  @IsOptional()
+  @IsDateString()
+  preOrderDeliveryDate?: string | null;
+
   // ── Image Support ──────────────────────────────
   @ApiPropertyOptional({
     example: ['https://example.com/img1.jpg', 'https://example.com/img2.jpg'],

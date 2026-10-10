@@ -126,6 +126,19 @@ export class UpdateProductDto {
   /** Accepted and ignored — see CreateProductDto.expiryDate. @deprecated */
   expiryDate?: string;
 
+  /**
+   * Set a date to make this listing a pre-order; send an explicit `null` to
+   * turn pre-order off and go back to tracked stock. Omitting the field
+   * leaves whatever is stored alone.
+   */
+  @ApiPropertyOptional({
+    example: '2026-12-15T00:00:00.000Z',
+    description: 'Date to set pre-order, null to clear it, omitted to leave unchanged.',
+  })
+  @IsOptional()
+  @IsDateString()
+  preOrderDeliveryDate?: string | null;
+
   // ── Image Support ──────────────────────────────
   @ApiPropertyOptional({
     example: ['https://example.com/img1.jpg'],
