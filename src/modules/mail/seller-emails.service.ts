@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { isPreOrder } from '../../common/utils/pre-order.util';
 import { MailService } from './mail.service';
 import { renderEmail, escapeHtml } from './templates/email-layout';
 import {
@@ -194,6 +195,7 @@ export class SellerEmailsService {
           isActive: true,
           deletedAt: true,
           sellerId: true,
+          preOrderDeliveryDate: true,
           seller: {
             select: { companyName: true, user: { select: { email: true } } },
           },
@@ -207,8 +209,12 @@ export class SellerEmailsService {
           },
         },
       });
-      // A delisted or deleted product running out is not news.
-      if (!offer || !offer.isActive || offer.deletedAt) return;
+      // A delisted or deleted product running out is not news. Neither is a
+      // pre-order: it has no tracked stock by design — the DEFAULT batch is
+      // written at 0 purely so there is a row to update if the seller later
+      // turns pre-order off — so "sold out" is not merely unhelpful here, it
+      // is false.
+      if (!offer || !offer.isActive || offer.deletedAt || isPreOrder(offer)) return;
 
       const to = offer.seller?.user?.email;
       if (!to) return;
