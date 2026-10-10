@@ -1,7 +1,8 @@
 import { CartService } from './cart.service';
 
 /**
- * The cart's three stock gates, and what a pre-order does to each.
+ * The cart's three stock gates, and what a pre-order does to each — plus the
+ * response shape that lets the client tell the difference.
  *
  * A pre-order listing carries no ProductBatch rows at all, so `batches: []`
  * here is not an out-of-stock listing — it is what every pre-order looks
@@ -363,6 +364,121 @@ describe('CartService.getCart — pre-order lines survive pruning', () => {
     expect(result.items).toHaveLength(0);
     expect(prisma.cartItem.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ['item-1'] } },
+    });
+  });
+});
+
+// ──────────────────────────────────────────────
+// Response shape — all three endpoints agree
+// ──────────────────────────────────────────────
+
+/**
+ * `stock` is a truthful 0 on a pre-order line, so the date is the only thing
+ * separating "not made yet" from "nothing left". The buyer app's rule is
+ * `isPreOrder(line) || stock > 0`, which needs the date to be on the line.
+ *
+ * Two of these endpoints build their response through a Prisma `select`, and
+ * a mock returns whatever shape the test handed it — so asserting on the
+ * returned line alone cannot catch a dropped column. Each `select` is
+ * therefore asserted against the object actually passed to Prisma, the same
+ * way getCart's query is pinned above.
+ */
+describe('cart responses carry preOrderDeliveryDate', () => {
+  describe('addToCart', () => {
+    it("names the column in the created item's select", async () => {
+      const { service, prisma } = buildAdd(preOrderOffer());
+
+      await service.addToCart('buyer-1', {
+        sellerOfferId: 'offer-1',
+        quantity: 2,
+      } as never);
+
+      const select =
+        prisma.cartItem.create.mock.calls[0][0].include.sellerOffer.select;
+      expect(select.preOrderDeliveryDate).toBe(true);
+    });
+
+    it('returns the date on a pre-order line, alongside a truthful stock of 0', async () => {
+      const { service } = buildAdd(preOrderOffer());
+
+      const result = await service.addToCart('buyer-1', {
+        sellerOfferId: 'offer-1',
+        quantity: 2,
+      } as never);
+
+      expect(result.sellerOffer.preOrderDeliveryDate).toEqual(PRE_ORDER_DATE);
+      expect(result.sellerOffer.stock).toBe(0);
+    });
+
+    it('returns null on an ordinary line', async () => {
+      const { service } = buildAdd(offer({ batches: [{ stock: 5 }] }));
+
+      const result = await service.addToCart('buyer-1', {
+        sellerOfferId: 'offer-1',
+        quantity: 2,
+      } as never);
+
+      expect(result.sellerOffer.preOrderDeliveryDate).toBeNull();
+      expect(result.sellerOffer.stock).toBe(5);
+    });
+  });
+
+  describe('updateCartItem', () => {
+    it("names the column in the updated item's select", async () => {
+      const { service, prisma } = buildUpdate(preOrderOffer());
+
+      await service.updateCartItem('buyer-1', 'item-1', {
+        quantity: 9,
+      } as never);
+
+      const select =
+        prisma.cartItem.update.mock.calls[0][0].include.sellerOffer.select;
+      expect(select.preOrderDeliveryDate).toBe(true);
+    });
+
+    it('returns the date on a pre-order line', async () => {
+      const { service } = buildUpdate(preOrderOffer());
+
+      const result = await service.updateCartItem('buyer-1', 'item-1', {
+        quantity: 9,
+      } as never);
+
+      expect(result.sellerOffer.preOrderDeliveryDate).toEqual(PRE_ORDER_DATE);
+      expect(result.sellerOffer.stock).toBe(0);
+    });
+
+    it('returns null on an ordinary line', async () => {
+      const { service } = buildUpdate(offer({ batches: [{ stock: 5 }] }));
+
+      const result = await service.updateCartItem('buyer-1', 'item-1', {
+        quantity: 3,
+      } as never);
+
+      expect(result.sellerOffer.preOrderDeliveryDate).toBeNull();
+    });
+  });
+
+  describe('getCart', () => {
+    it('returns the date on a kept pre-order line', async () => {
+      const { service } = buildCart([line('item-1', preOrderOffer())]);
+
+      const result = await service.getCart('buyer-1');
+
+      expect(result.items[0].sellerOffer.preOrderDeliveryDate).toEqual(
+        PRE_ORDER_DATE,
+      );
+      expect(result.items[0].sellerOffer.stock).toBe(0);
+    });
+
+    it('returns null on an ordinary line', async () => {
+      const { service } = buildCart([
+        line('item-1', offer({ batches: [{ stock: 5 }] })),
+      ]);
+
+      const result = await service.getCart('buyer-1');
+
+      expect(result.items[0].sellerOffer.preOrderDeliveryDate).toBeNull();
+      expect(result.items[0].sellerOffer.stock).toBe(5);
     });
   });
 });

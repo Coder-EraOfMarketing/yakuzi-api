@@ -174,6 +174,10 @@ export class CartService {
             maximumOrderQuantity: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
+            // The client cannot tell a pre-order from a sold-out listing
+            // otherwise: both report stock 0. A `select` drops what it does
+            // not name, so all three cart endpoints name this one.
+            preOrderDeliveryDate: true,
 
             batches: {
               where: { stock: { gt: 0 } },
@@ -464,6 +468,9 @@ minimumOrderQuantity: true,
             maximumOrderQuantity: true,
                 shippingCharges: true,
                 finalShippingPrice: true,
+            // Named for the same reason as in addToCart: stock 0 alone cannot
+            // distinguish a pre-order, and a `select` drops what it omits.
+            preOrderDeliveryDate: true,
 
             batches: {
               where: { stock: { gt: 0 } },
@@ -574,6 +581,11 @@ minimumOrderQuantity: true,
     // Remove variant/catalogProduct/batches to keep the response clean, attach
     // a flat images array and the total available stock summed across in-stock
     // batches.
+    // `preOrderDeliveryDate` rides `...rest` and must keep doing so: a
+    // pre-order's `stock` below is a truthful 0, so the date is the only thing
+    // telling the client "not made yet" from "nothing left". The buyer app
+    // reads `isPreOrder(line) || stock > 0`. Every query feeding this helper
+    // therefore names the column — see the note in pre-order.util.
     const { variant, catalogProduct, batches, ...rest } = sellerOffer;
     return {
       ...rest,
