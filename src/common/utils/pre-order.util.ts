@@ -2,16 +2,32 @@
  * Loading a row with Prisma `select`? Name `preOrderDeliveryDate` explicitly.
  *
  * A column nobody asked for is absent, and `isPreOrder` reads an absent key
- * exactly as it reads a stored `null` — both mean "no date", so it quietly
- * answers `false`. There is no error and no type complaint to catch the
- * mistake. A pre-order listing fetched through a narrow `select` that forgot
- * this field will therefore have its stock decremented and restocked like
+ * exactly as it reads a stored `null` — both mean "no date", so it answers
+ * `false`. A pre-order listing fetched through a narrow `select` that forgot
+ * this field would therefore have its stock decremented and restocked like
  * ordinary inventory.
  *
- * Every narrow `select` that loads an offer has to name this column, and
- * there are several. Deliberately not listed here: a list in a comment goes
- * stale the moment someone adds a gate, and a stale list is worse than none
- * because it reads as permission to skip the check. `grep -rn
+ * How much the compiler saves you depends on the row's type, and it is worth
+ * knowing which case you are in:
+ *
+ *   - a **typed** Prisma payload from a narrow `select` fails to compile. The
+ *     only member of `PreOrderable` is optional, so a row lacking the key has
+ *     no properties in common with it and weak-type detection rejects the
+ *     call — TS2559. That mistake is caught at build time, not in production.
+ *   - an **`any`** row, or a response object built by hand, gets no such help.
+ *     This is where the real exposure lives: `orders.getOrderDetail` maps its
+ *     items as `(item: any)`, and `orders.getSellerOrders` assembles its
+ *     response from an explicit field list, where a column being present on
+ *     the row does not put it on the wire. Both have to name this field
+ *     deliberately.
+ *
+ * So: narrow a typed query and the build will tell you. Reach for the column
+ * through an `any`, or forward it into a payload you are constructing by hand,
+ * and nothing will.
+ *
+ * Which queries those are is deliberately not listed here: a list in a comment
+ * goes stale the moment someone adds a gate, and a stale list is worse than
+ * none because it reads as permission to skip the check. `grep -rn
  * "preOrderDeliveryDate" src` is the honest answer.
  *
  * `products.findOwnProduct` is the inverse trap: it deliberately runs a bare

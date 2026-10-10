@@ -831,6 +831,12 @@ export class OrdersService {
           // take. Skipping the push as well keeps the connected sales
           // channels from being told about a stock change that did not
           // happen.
+          //
+          // Reads the live offer, unlike cancelOrder's matching guard, which
+          // reads the OrderItem's snapshot: at the point of sale the listing
+          // *is* the truth — the snapshot does not exist yet, it is written a
+          // few lines above from this same object. By cancellation time the
+          // listing may have drifted, so only the snapshot is reliable there.
           if (isPreOrder(item.sellerOffer)) continue;
 
           let remaining = item.quantity;
@@ -936,9 +942,12 @@ export class OrdersService {
                 manufacturer: true,
                 mrp: true,
                 // Defensive, not load-bearing here: nothing in this read makes
-                // a stock decision. Named so a future `isPreOrder` on one of
-                // these rows cannot get a silent `false` off an absent key —
-                // see the note on PreOrderable.
+                // a stock decision, and `items` are included whole, so a
+                // client already has the authoritative snapshot alongside.
+                // Named anyway because `isPreOrder` on an untyped row — this
+                // file has an `any`-typed item map, see getOrderDetail — would
+                // read an absent key as `false` with nothing to flag it. On a
+                // typed Prisma row the compiler catches that (TS2559).
                 preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
@@ -1004,9 +1013,12 @@ export class OrdersService {
                 manufacturer: true,
                 mrp: true,
                 // Defensive, not load-bearing here: nothing in this read makes
-                // a stock decision. Named so a future `isPreOrder` on one of
-                // these rows cannot get a silent `false` off an absent key —
-                // see the note on PreOrderable.
+                // a stock decision, and `items` are included whole, so a
+                // client already has the authoritative snapshot alongside.
+                // Named anyway because `isPreOrder` on an untyped row — this
+                // file has an `any`-typed item map, see getOrderDetail — would
+                // read an absent key as `false` with nothing to flag it. On a
+                // typed Prisma row the compiler catches that (TS2559).
                 preOrderDeliveryDate: true,
                 catalogProduct: {
                   select: {
@@ -1076,7 +1088,11 @@ export class OrdersService {
                 name: true,
                 manufacturer: true,
                 mrp: true,
-                // Defensive — see the note at the matching select in checkout.
+                // Load-bearing in a way the other two are not: the response
+                // below is built by `order.items.map((item: any) => …)`, and
+                // inside that `any` an absent key reads as `false` with no
+                // compiler complaint. See the note at the matching select in
+                // checkout.
                 preOrderDeliveryDate: true,
                 gstPercent: true,
                 shippingCharges: true,
@@ -1323,8 +1339,10 @@ export class OrdersService {
             name: true,
             manufacturer: true,
             mrp: true,
-            // Defensive — see the note at the matching select in checkout.
-            preOrderDeliveryDate: true,
+            // No preOrderDeliveryDate here on purpose. This response is
+            // hand-built below and names the OrderItem's snapshot explicitly;
+            // selecting the listing's live date too would put two dates in one
+            // payload with nothing but a docstring to say which is the promise.
             catalogProduct: {
               select: {
                 images: {
@@ -1399,6 +1417,15 @@ export class OrdersService {
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
+        // The OrderItem's snapshot — the promise this buyer was actually
+        // given. This response is hand-built from a field list, so a column
+        // being on the row does not put it on the wire; it has to be named
+        // here. `product` deliberately does not carry the listing's live date:
+        // a seller dashboard rendering "promised delivery" from the listing
+        // would show whatever the seller last saved rather than what was
+        // promised, so the wrong value is left unavailable rather than merely
+        // discouraged.
+        preOrderDeliveryDate: item.preOrderDeliveryDate,
       });
       entry.sellerTotal += Number(item.totalPrice);
     }
@@ -2266,6 +2293,10 @@ export class OrdersService {
         //
         // Orders placed before pre-orders existed carry a null snapshot and so
         // take the restock path, which is correct for them.
+        //
+        // Checkout's matching guard reads the live offer instead, and that is
+        // not an inconsistency: there the snapshot does not exist yet — the
+        // same statement that skips the decrement has just written it.
         //
         // The skip has to come before the create-a-batch fallback below: that
         // branch exists to rescue units from an offer whose batch row has
