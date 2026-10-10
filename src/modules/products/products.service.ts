@@ -1009,7 +1009,8 @@ export class ProductsService {
 
   /**
    * Validate a list of product IDs, returning current price/mrp/stock for
-   * whichever ones are still active, non-deleted, and in stock.
+   * whichever ones are still active, non-deleted, and purchasable — in stock,
+   * or a pre-order (which carries no stock but is still for sale).
    */
   async validateIds(ids: string[]) {
     if (!ids || ids.length === 0) return [];
@@ -1038,6 +1039,7 @@ export class ProductsService {
         id: true,
         mrp: true,
         finalCustomerPayable: true,
+        preOrderDeliveryDate: true,
         batches: { where: { stock: { gt: 0 } }, select: { stock: true } },
       },
     });
@@ -1047,8 +1049,11 @@ export class ProductsService {
         price: o.finalCustomerPayable ?? o.mrp,
         mrp: o.mrp,
         stock: o.batches.reduce((sum, b) => sum + b.stock, 0),
+        preOrderDeliveryDate: o.preOrderDeliveryDate ?? null,
       }))
-      .filter((o) => o.stock > 0);
+      // "In stock" is not the test — "can it be bought" is. A pre-order has
+      // no stock and is for sale.
+      .filter((o) => o.stock > 0 || isPreOrder(o));
   }
 
   // ──────────────────────────────────────────────
