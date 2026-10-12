@@ -5,6 +5,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { ShiprocketService } from './shiprocket.service';
 import { OrdersService } from './orders.service';
 import { mapShiprocketStatus, isForwardStatusMove } from './shiprocket-status-map';
+import { payoutOfferSelect } from '../settlements/payout-calculator';
 
 interface PollableOrder {
   id: string;
@@ -125,17 +126,11 @@ export class ShiprocketSyncService {
           const delivered = await this.prisma.order.findUnique({
             where: { id: order.id },
             include: {
-              items: {
-                include: {
-                  sellerOffer: {
-                    select: {
-                      finalShippingPrice: true,
-                      shippingCharges: true,
-                      variant: { include: { catalogProduct: true } },
-                    },
-                  },
-                },
-              },
+              // payoutOfferSelect, not a hand-rolled list: this order goes
+              // straight to the settlement writer, and the old list reached
+              // the catalogue product through the variant only, so an offer
+              // linked directly to a product settled at 0%.
+              items: { include: { sellerOffer: { select: payoutOfferSelect } } },
             },
           });
           if (delivered) {

@@ -14,7 +14,12 @@ import { UpdateShippingDetailsDto } from './dto/update-shipping-details.dto';
 import { SelfShipTrackingDto } from './dto/self-ship-tracking.dto';
 import { OrderStatus, Role, PaymentStatus, Prisma } from '@prisma/client';
 import { ShiprocketService } from './shiprocket.service';
-import { calculateSellerPayout, buildPayoutInputFromOrderItem } from '../settlements/payout-calculator';
+import {
+  calculateSellerPayout,
+  buildPayoutInputFromOrderItem,
+  payoutOfferSelect,
+  PayoutOrderItemSource,
+} from '../settlements/payout-calculator';
 import {
   FULFILLMENT_MODE_SELF_SHIP,
   FULFILLMENT_MODE_SHIPROCKET,
@@ -1531,18 +1536,13 @@ export class OrdersService {
       include: {
         items: {
           include: {
+            // payoutOfferSelect, not a hand-rolled list: this row goes
+            // straight into createSettlementsForDeliveredOrder below, and the
+            // old list reached the catalogue product through the variant only.
             sellerOffer: {
-              select: { 
-                id: true, 
-                name: true, 
+              select: {
+                ...payoutOfferSelect,
                 category: true,
-                finalShippingPrice: true,
-                shippingCharges: true,
-                variant: {
-                  include: {
-                    catalogProduct: true,
-                  },
-                },
               },
             },
           },
@@ -1565,28 +1565,33 @@ export class OrdersService {
     return updated;
   }
 
-  async createSettlementsForDeliveredOrder(order: {
-    orderStatus: OrderStatus;
-    paymentStatus: PaymentStatus;
-    /** Snapshotted at checkout; decides whether shipping is withheld. */
-    fulfillmentMode?: string | null;
-    items: Array<{
-      id: string;
-      sellerId: string;
-      unitPrice: Prisma.Decimal | number;
-      quantity: number;
-      sellerOffer?: {
-        finalShippingPrice?: Prisma.Decimal | number | null;
-        shippingCharges?: Prisma.Decimal | number | null;
-        variant?: {
-          catalogProduct?: {
-            commissionPercent?: Prisma.Decimal | number | null;
-            commissionGstPercent?: Prisma.Decimal | number | null;
-          } | null;
-        } | null;
-      } | null;
-    }>;
-  }): Promise<void> {
+  /**
+   * THE settlement writer. Every path that marks an order delivered-and-paid
+   * — the seller status update, the admin status override, admin payment
+   * confirmation, the Razorpay/offline payment confirmation and the Shiprocket
+   * poller — funnels through here, so exactly one piece of code decides what a
+   * seller is paid.
+   *
+   * `items[].sellerOffer` MUST have been loaded with payoutOfferSelect. The
+   * rate chain reads both routes from an offer to its catalogue product
+   * (direct catalogProductId, or variantId -> variant.catalogProductId), and a
+   * half-loaded offer would resolve 0% in silence rather than throw — which is
+   * precisely the bug this replaced. PayoutOfferSource therefore declares both
+   * relations as required (nullable) properties, so an incomplete query is a
+   * compile error.
+   *
+   * Pass `tx` to enlist in a caller's transaction; otherwise one is opened here.
+   */
+  async createSettlementsForDeliveredOrder(
+    order: {
+      orderStatus: OrderStatus;
+      paymentStatus: PaymentStatus;
+      /** Snapshotted at checkout; decides whether shipping is withheld. */
+      fulfillmentMode?: string | null;
+      items: PayoutOrderItemSource[];
+    },
+    tx?: Prisma.TransactionClient,
+  ): Promise<void> {
     if (
       order.orderStatus !== OrderStatus.DELIVERED ||
       order.paymentStatus !== PaymentStatus.SUCCESS
@@ -1594,59 +1599,44 @@ export class OrdersService {
       return;
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    // Who shipped it decides whether shipping is withheld, and that is the
+    // order's own snapshot, never the seller's current toggle.
+    const sellerKeptShipping = isSelfShipOrder(order);
+
+    const run = async (client: Prisma.TransactionClient) => {
       for (const item of order.items) {
-        const existing = await tx.sellerSettlement.findUnique({
+        const existing = await client.sellerSettlement.findUnique({
           where: { orderItemId: item.id },
         });
-        if (!existing) {
-          const sellerOffer = item.sellerOffer;
-          const catalogProduct = sellerOffer?.variant?.catalogProduct;
+        if (existing) continue;
 
-          const baseSellingPrice = Number(item.unitPrice);
-          const quantity = item.quantity;
-          const finalShippingPrice = item.sellerOffer?.finalShippingPrice
-            ? Number(item.sellerOffer.finalShippingPrice)
-            : item.sellerOffer?.shippingCharges
-              ? Number(item.sellerOffer.shippingCharges)
-              : 0;
+        const breakdown = calculateSellerPayout(
+          buildPayoutInputFromOrderItem(item, sellerKeptShipping),
+        );
 
-          const commissionPercent = catalogProduct?.commissionPercent
-            ? Number(catalogProduct.commissionPercent)
-            : 0;
-          const commissionGstPercent = catalogProduct?.commissionGstPercent
-            ? Number(catalogProduct.commissionGstPercent)
-            : 18;
-
-          const breakdown = calculateSellerPayout({
-            baseSellingPrice,
-            quantity,
-            finalShippingPrice,
-            commissionPercent,
-            commissionGstPercent,
-            // The seller booked the courier, so the shipping the buyer paid is
-            // theirs and the platform withholds none of it.
-            sellerKeepsShipping: isSelfShipOrder(order),
-          });
-
-          await tx.sellerSettlement.create({
-            data: {
-              sellerId: item.sellerId,
-              orderItemId: item.id,
-              amount: breakdown.netPayout.toDecimalPlaces(2).toString(),
-              grossAmount: breakdown.grossAmount.toString(),
-              commission: breakdown.commission.toString(),
-              commissionGst: breakdown.commissionGst.toString(),
-              fixedFee: '0',
-              fixedFeeGst: '0',
-              withholdingTax: '0',
-              netPayout: breakdown.netPayout.toString(),
-              payoutStatus: breakdown.status,
-            },
-          });
-        }
+        await client.sellerSettlement.create({
+          data: {
+            sellerId: item.sellerId,
+            orderItemId: item.id,
+            amount: breakdown.netPayout.toDecimalPlaces(2).toString(),
+            grossAmount: breakdown.grossAmount.toString(),
+            commission: breakdown.commission.toString(),
+            commissionGst: breakdown.commissionGst.toString(),
+            fixedFee: '0',
+            fixedFeeGst: '0',
+            withholdingTax: '0',
+            netPayout: breakdown.netPayout.toString(),
+            payoutStatus: breakdown.status,
+          },
+        });
       }
-    });
+    };
+
+    if (tx) {
+      await run(tx);
+      return;
+    }
+    await this.prisma.$transaction(run);
   }
 
   // ──────────────────────────────────────────────

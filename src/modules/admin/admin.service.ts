@@ -10,7 +10,11 @@ import { StorefrontRevalidationService } from '../seo/storefront-revalidation.se
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 import slugify from 'slugify';
-import { buildPayoutInputFromOrderItem, calculateSellerPayout } from '../settlements/payout-calculator';
+import {
+  buildPayoutInputFromOrderItem,
+  calculateSellerPayout,
+  payoutOfferSelect,
+} from '../settlements/payout-calculator';
 import { isSelfShipOrder, resolveOfferShipping } from '../../common/utils/shipping.util';
 import { AdminQuerySuggestionsDto } from './dto/query-suggestions.dto';
 import { AdminUpdateProductDto } from './dto/admin-update-product.dto';
@@ -1743,7 +1747,9 @@ export class AdminService {
         },
         items: {
           include: {
-            sellerOffer: { select: { name: true } },
+            // payoutOfferSelect, not just `name`: this row is handed to the
+            // settlement writer below, which needs the full commission chain.
+            sellerOffer: { select: payoutOfferSelect },
             seller: { select: { companyName: true } },
           },
         },
@@ -1761,35 +1767,12 @@ export class AdminService {
       this.ordersService.notifyBuyerAccepted(order.buyerId, order.id);
     }
 
-    // Create settlements if status is DELIVERED and payment is successful
-    if (
-      updated.orderStatus === OrderStatus.DELIVERED &&
-      updated.paymentStatus === PaymentStatus.SUCCESS
-    ) {
-      for (const item of updated.items) {
-        const existing = await this.prisma.sellerSettlement.findUnique({
-          where: { orderItemId: item.id },
-        });
-        if (!existing) {
-          const commission = +(item.totalPrice.toNumber() * 0.05).toFixed(2);
-          await this.prisma.sellerSettlement.create({
-            data: {
-              sellerId: item.sellerId,
-              orderItemId: item.id,
-              amount: +(item.totalPrice.toNumber() - commission).toFixed(2),
-              commission,
-              grossAmount: item.totalPrice,
-              commissionGst: 0,
-              fixedFee: 0,
-              fixedFeeGst: 0,
-              withholdingTax: 0,
-              netPayout: +(item.totalPrice.toNumber() - commission).toFixed(2),
-              payoutStatus: 'PENDING',
-            },
-          });
-        }
-      }
-    }
+    // Settlements go through the ONE writer, which owns the
+    // DELIVERED-and-paid guard, the per-item idempotency check and the
+    // commission maths. This used to be a hardcoded `totalPrice * 0.05` with
+    // commissionGst: 0 and shipping never withheld, which is what charged
+    // sellers 5% instead of their configured rate and no GST at all.
+    await this.ordersService.createSettlementsForDeliveredOrder(updated);
 
     this.logger.log(
       `Order ${orderId} status overridden to ${dto.status} by admin`,
@@ -1847,7 +1830,19 @@ export class AdminService {
       include: {
         order: {
           include: {
-            items: { select: { id: true, sellerId: true, totalPrice: true } },
+            // unitPrice/quantity and the full commission chain, because these
+            // items are handed to the settlement writer below. The old select
+            // carried totalPrice alone, which is all a flat 5% ever needed.
+            items: {
+              select: {
+                id: true,
+                sellerId: true,
+                totalPrice: true,
+                unitPrice: true,
+                quantity: true,
+                sellerOffer: { select: payoutOfferSelect },
+              },
+            },
           },
         },
       },
@@ -1890,35 +1885,16 @@ export class AdminService {
         data: { paymentStatus: newStatus },
       });
 
-      // If fully paid AND delivered â†’ create seller settlements
-      if (
-        newStatus === PaymentStatus.SUCCESS &&
-        payment.order.orderStatus === OrderStatus.DELIVERED
-      ) {
-        for (const item of payment.order.items) {
-          const existing = await tx.sellerSettlement.findUnique({
-            where: { orderItemId: item.id },
-          });
-          if (!existing) {
-            const commission = +(item.totalPrice.toNumber() * 0.05).toFixed(2);
-            await tx.sellerSettlement.create({
-              data: {
-                sellerId: item.sellerId,
-                orderItemId: item.id,
-                amount: +(item.totalPrice.toNumber() - commission).toFixed(2),
-                commission,
-                grossAmount: item.totalPrice,
-                commissionGst: 0,
-                fixedFee: 0,
-                fixedFeeGst: 0,
-                withholdingTax: 0,
-                netPayout: +(item.totalPrice.toNumber() - commission).toFixed(2),
-                payoutStatus: 'PENDING',
-              },
-            });
-          }
-        }
-      }
+      // If fully paid AND delivered, create seller settlements.
+      // Through the ONE writer, enlisted in this transaction: it owns the
+      // DELIVERED-and-paid guard, the per-item idempotency check and the
+      // commission maths. This was a hardcoded `totalPrice * 0.05` with
+      // commissionGst: 0 and shipping never withheld, which is what charged
+      // sellers 5% instead of their configured rate and no GST at all.
+      await this.ordersService.createSettlementsForDeliveredOrder(
+        { ...payment.order, paymentStatus: newStatus },
+        tx,
+      );
 
       return { confirmed, totalPaid, newStatus };
     });
@@ -2106,7 +2082,7 @@ export class AdminService {
           where: pendingWhere,
           orderBy: { createdAt: 'desc' },
           include: {
-            sellerOffer: { include: { catalogProduct: true } },
+            sellerOffer: { select: payoutOfferSelect },
             // Who shipped it decides whether shipping is withheld, and that is the
             // order's own snapshot, never the seller's current toggle.
             order: { select: { fulfillmentMode: true } },
@@ -2202,7 +2178,7 @@ export class AdminService {
           ? await this.prisma.orderItem.findMany({
               where: pendingWhere,
               include: {
-                sellerOffer: { include: { catalogProduct: true } },
+                sellerOffer: { select: payoutOfferSelect },
                 // Who shipped it decides whether shipping is withheld, and that is the
                 // order's own snapshot, never the seller's current toggle.
                 order: { select: { fulfillmentMode: true } },
@@ -2264,7 +2240,7 @@ export class AdminService {
         const item = await this.prisma.orderItem.findUnique({
           where: { id: orderItemId },
           include: {
-            sellerOffer: { include: { catalogProduct: true } },
+            sellerOffer: { select: payoutOfferSelect },
             // Who shipped it decides whether shipping is withheld, and that is the
             // order's own snapshot, never the seller's current toggle.
             order: { select: { fulfillmentMode: true } },
@@ -2363,7 +2339,7 @@ export class AdminService {
       include: {
         items: {
           include: {
-            sellerOffer: { include: { catalogProduct: true } },
+            sellerOffer: { select: payoutOfferSelect },
           },
         },
       },

@@ -1,5 +1,6 @@
 import { OrderStatus, PaymentStatus } from '@prisma/client';
 import { ShiprocketSyncService } from './shiprocket-sync.service';
+import { payoutOrderItemInclude } from '../settlements/payout-calculator';
 
 const build = () => {
   const prisma = {
@@ -200,21 +201,16 @@ describe('ShiprocketSyncService.syncOneOrder', () => {
       orderStatus: OrderStatus.OUT_FOR_DELIVERY,
     });
 
+    // Asserted against the exported constant rather than a copy of its shape.
+    // This is a settlement path, and a query that fetches less than the payout
+    // engine reads resolves a 0% commission SILENTLY — which is how sellers
+    // came to be billed a flat 5% with no GST. Pinning the constant means the
+    // invariant under test is "this query uses the canonical include", which
+    // stays true when the include grows; a hand-copied shape would merely go
+    // stale and get "fixed" by pasting in whatever the code now sends.
     expect(prisma.order.findUnique).toHaveBeenCalledWith({
       where: { id: 'order-1' },
-      include: {
-        items: {
-          include: {
-            sellerOffer: {
-              select: {
-                finalShippingPrice: true,
-                shippingCharges: true,
-                variant: { include: { catalogProduct: true } },
-              },
-            },
-          },
-        },
-      },
+      include: { items: { include: payoutOrderItemInclude } },
     });
     expect(ordersService.createSettlementsForDeliveredOrder).toHaveBeenCalledWith(deliveredOrder);
   });

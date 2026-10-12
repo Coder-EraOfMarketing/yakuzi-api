@@ -572,6 +572,14 @@ describe('OrdersService.createSettlementsForDeliveredOrder', () => {
     sellerOffer: {
       finalShippingPrice: null,
       shippingCharges: null,
+      // Both links are stated because PayoutOfferSource requires both to be
+      // PRESENT, though either may be null. An offer reaches its catalogue
+      // product directly OR through its variant, and code that supplied only
+      // one resolved a 0% commission silently — which is how sellers came to
+      // be billed a flat 5% with no GST. Now it will not compile.
+      // `catalogProduct: null` means "loaded, and genuinely not linked that
+      // way", as distinct from "never fetched".
+      catalogProduct: null,
       variant: { catalogProduct: { commissionPercent: 10, commissionGstPercent: 18 } },
     },
     ...over,
