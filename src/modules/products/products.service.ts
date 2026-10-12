@@ -998,6 +998,11 @@ export class ProductsService {
       where: { sellerOfferId: product.id },
     });
 
+    // 3. This offer may have been the cheapest one on its master, so the
+    // master's denormalised sort price has to drop it. Nothing here changed a
+    // price, so recalculateFinalCustomerPayable never runs on this path.
+    await this.recalculateLowestOfferPriceForOffer(product.id);
+
     // Soft, not hard — the row survives, so the offer can still be resolved
     // back to its product and the pages that were showing this seller can be
     // dropped.
@@ -1190,9 +1195,30 @@ export class ProductsService {
     } = query;
     const skip = (page - 1) * limit;
 
-    // Handle sortBy mapping
+    // Handle sortBy mapping.
+    //
+    // price -> lowestOfferPrice, NOT mrp. CatalogProduct.mrp is the master's
+    // own list price and is null on nearly every row, so the old mapping made
+    // `ORDER BY mrp` a no-op: sortOrder=asc and sortOrder=desc returned
+    // byte-identical pages. It was also the wrong number even where present —
+    // the card prints the cheapest offer's computed payable, which is what
+    // lowestOfferPrice holds.
     const effectiveSortBy =
-      sortBy === 'price' ? 'mrp' : sortBy === 'newest' ? 'updatedAt' : sortBy;
+      sortBy === 'price'
+        ? 'lowestOfferPrice'
+        : sortBy === 'newest'
+          ? 'updatedAt'
+          : sortBy;
+
+    // Products nobody sells have a null lowestOfferPrice. Postgres sorts NULLs
+    // first on DESC by default, which would put every unsold product at the
+    // head of "Price: High to Low" — so they go last in BOTH directions. All
+    // three findMany paths below share this one object so the search-union,
+    // bucketed-relevance and plain paths can never drift apart.
+    const orderBy: Prisma.CatalogProductOrderByWithRelationInput =
+      effectiveSortBy === 'lowestOfferPrice'
+        ? { lowestOfferPrice: { sort: sortOrder, nulls: 'last' } }
+        : ({ [effectiveSortBy]: sortOrder } as Prisma.CatalogProductOrderByWithRelationInput);
 
     const where: Prisma.CatalogProductWhereInput = {
       isActive: true,
@@ -1337,7 +1363,7 @@ export class ProductsService {
           this.prisma.catalogProduct.findMany({
             where: unionWhere,
             include: this.buyerGridInclude(),
-            orderBy: { [effectiveSortBy]: sortOrder },
+            orderBy,
             skip,
             take: limit,
           }),
@@ -1377,7 +1403,7 @@ export class ProductsService {
         const rows = await this.prisma.catalogProduct.findMany({
           where: bucketWheres[i],
           include: this.buyerGridInclude(),
-          orderBy: { [effectiveSortBy]: sortOrder },
+          orderBy,
           skip: remainingSkip,
           take: remainingTake,
         });
@@ -1396,7 +1422,7 @@ export class ProductsService {
       this.prisma.catalogProduct.findMany({
         where,
         include: this.buyerGridInclude(),
-        orderBy: { [effectiveSortBy]: sortOrder },
+        orderBy,
         skip,
         take: limit,
       }),
@@ -1639,6 +1665,98 @@ export class ProductsService {
       where: { id: sellerOfferId },
       data: { finalCustomerPayable }
     });
+
+    // The master's denormalised sort price is derived from exactly the number
+    // just written, so it is recomputed here rather than at each of the eight
+    // call sites above — anything that can change an offer's price arrives
+    // through this method.
+    await this.recalculateLowestOfferPriceForOffer(sellerOfferId);
+  }
+
+  /**
+   * Refresh the `lowestOfferPrice` of whatever master(s) an offer belongs to.
+   *
+   * Call this from anything that changes whether an offer is SELLABLE without
+   * changing its price — disable, enable, soft-delete, approve, reject. Those
+   * paths never touch mrp or a discount, so they never reach
+   * recalculateFinalCustomerPayable, yet each one adds or removes a candidate
+   * from the master's minimum. A stale value here is a wrong price on the shelf.
+   *
+   * An offer reaches its master by TWO routes — `catalogProductId` directly, or
+   * `variantId` through a ProductVariant — and both are resolved. Following
+   * only one has already caused three production bugs in this codebase (a
+   * wrong product photo on orders, a 0% commission, a flat-5% settlement).
+   */
+  public async recalculateLowestOfferPriceForOffer(sellerOfferId: string) {
+    const offer = await this.prisma.sellerOffer.findUnique({
+      where: { id: sellerOfferId },
+      select: {
+        catalogProductId: true,
+        variant: { select: { catalogProductId: true } },
+      },
+    });
+    if (!offer) return;
+
+    // A Set, because an offer commonly carries both a catalogProductId and a
+    // variantId pointing at the same master; recomputing it twice is wasted
+    // work, and on the rare row where they differ both masters need refreshing.
+    const masterIds = new Set<string>();
+    if (offer.catalogProductId) masterIds.add(offer.catalogProductId);
+    if (offer.variant?.catalogProductId)
+      masterIds.add(offer.variant.catalogProductId);
+
+    for (const masterId of masterIds) {
+      await this.recalculateLowestOfferPrice(masterId);
+    }
+  }
+
+  /**
+   * Recompute one master's `lowestOfferPrice`: the minimum final customer
+   * payable across its live offers, i.e. the number its grid card prints.
+   *
+   * Only genuinely-for-sale offers count (`isActive`, not soft-deleted), and
+   * both routes from offer to master are searched. `finalCustomerPayable` is
+   * preferred, with `mrp` as the fallback for an offer whose payable has never
+   * been computed — the same fallback the grid mapper uses.
+   *
+   * Null when nothing is on sale. That is a distinct fact from "costs 0", and
+   * findAll sorts those rows last in both directions.
+   */
+  public async recalculateLowestOfferPrice(catalogProductId: string) {
+    const offers = await this.prisma.sellerOffer.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        OR: [
+          { catalogProductId },
+          { variant: { catalogProductId } },
+        ],
+      },
+      select: { finalCustomerPayable: true, mrp: true },
+    });
+
+    const prices = offers
+      .map((o) => o.finalCustomerPayable ?? o.mrp)
+      // Discard the absent price BEFORE Number(), not after: Number(null) is
+      // 0, not NaN, so a nullish coalesce straight into Number() would price
+      // an offer carrying neither figure at zero — making the product the
+      // cheapest thing in the catalogue and parking it at the head of
+      // "Price: Low to High". SellerOffer.mrp is non-nullable today, so this
+      // is a guard against a future nullable column rather than live data.
+      .filter((p) => p !== null && p !== undefined)
+      .map((p) => Number(p))
+      .filter((n) => Number.isFinite(n));
+    const lowest = prices.length > 0 ? Math.min(...prices) : null;
+
+    // Deliberately a raw UPDATE rather than prisma.catalogProduct.update:
+    // CatalogProduct.updatedAt is @updatedAt, and it is what sortBy=newest
+    // orders on. Writing through the ORM would bump it on every offer edit, so
+    // a seller changing a price would shove the product to the front of
+    // "Newest" — re-introducing the supplier-activity-as-product-recency
+    // confusion that the isNew filter was already fixed for. This is a derived
+    // cache of other rows, not an edit to the product, so it must not register
+    // as one. Values are parameterised by the tagged template.
+    await this.prisma.$executeRaw`UPDATE "catalog_products" SET "lowestOfferPrice" = CAST(${lowest} AS DECIMAL(10,2)) WHERE "id" = ${catalogProductId}`;
   }
 
   /**
