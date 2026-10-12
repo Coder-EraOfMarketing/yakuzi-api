@@ -45,6 +45,12 @@ const build = (pushResult: Record<string, unknown> = {}) => {
   const ordersService = {
     pushOrderToShiprocketIfNeeded: jest.fn().mockResolvedValue(pushResult),
     notifyBuyerOfStatusChange: jest.fn().mockResolvedValue(undefined),
+    // The admin status change no longer computes a settlement itself. It used
+    // to inline `totalPrice * 0.05` with a hardcoded 0 GST and no shipping
+    // deduction, which is what actually billed sellers a flat 5%; it now
+    // delegates to the one engine so an admin-marked delivery settles
+    // identically to a seller-marked one.
+    createSettlementsForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
   };
   const sellersService = {};
   const service = new AdminService(

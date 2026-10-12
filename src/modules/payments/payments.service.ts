@@ -14,7 +14,12 @@ import {
   PaymentVerificationStatus,
   OrderStatus,
 } from '@prisma/client';
-import { calculateSellerPayout } from '../settlements/payout-calculator';
+import {
+  calculateSellerPayout,
+  buildPayoutInputFromOrderItem,
+  payoutOfferSelect,
+  PayoutOrderItemSource,
+} from '../settlements/payout-calculator';
 import { isSelfShipOrder } from '../../common/utils/shipping.util';
 import { InvoiceEmailService } from '../orders/invoice-email.service';
 import { SellerOrderNotifierService } from '../orders/seller-order-notifier.service';
@@ -270,19 +275,15 @@ export class PaymentsService {
       },
       include: {
         items: {
+          // payoutOfferSelect, not a hand-rolled list: these items are handed
+          // to createSettlements below, and the old list reached the catalogue
+          // product through the variant only, so an offer linked directly to a
+          // product settled at 0% commission and 0% GST.
           include: {
             sellerOffer: {
-              select: { 
-                id: true, 
-                name: true, 
+              select: {
+                ...payoutOfferSelect,
                 category: true,
-                finalShippingPrice: true,
-                shippingCharges: true,
-                variant: {
-                  include: {
-                    catalogProduct: true,
-                  },
-                },
               },
             },
           },
@@ -538,7 +539,7 @@ export class PaymentsService {
 
   private async createSettlements(
     tx: any,
-    items: any[],
+    items: PayoutOrderItemSource[],
     sellerKeepsShipping: boolean,
   ) {
     for (const item of items) {
@@ -548,26 +549,14 @@ export class PaymentsService {
       });
       if (existing) continue;
 
-      const sellerOffer = item.sellerOffer;
-      const catalogProduct = sellerOffer?.variant?.catalogProduct;
-      
-      const baseSellingPrice = item.unitPrice;
-      const quantity = item.quantity;
-      const finalShippingPrice = sellerOffer?.finalShippingPrice ?? sellerOffer?.shippingCharges ?? 0;
-      
-      const commissionPercent = catalogProduct?.commissionPercent ?? 0;
-      const commissionGstPercent = catalogProduct?.commissionGstPercent ?? 18;
-
-      const breakdown = calculateSellerPayout({
-        baseSellingPrice,
-        quantity,
-        finalShippingPrice,
-        commissionPercent,
-        commissionGstPercent,
-        // The seller booked the courier, so the shipping the buyer paid is
-        // theirs and the platform withholds none of it.
-        sellerKeepsShipping,
-      });
+      // One engine. The rates come from the shared resolution chain, which
+      // reaches the catalogue product BOTH ways (offer.catalogProductId and
+      // offer.variant.catalogProductId) and falls back product -> subCategory
+      // -> category. This used to read sellerOffer.variant.catalogProduct
+      // alone, so a directly-linked offer silently settled at 0%.
+      const breakdown = calculateSellerPayout(
+        buildPayoutInputFromOrderItem(item, sellerKeepsShipping),
+      );
 
       await tx.sellerSettlement.create({
         data: {

@@ -15,28 +15,66 @@ describe('calculateSellerPayout', () => {
   // Test 1: Standard Calculation
   it('should correctly calculate payout for a standard order', () => {
     // Gross = (500 × 1) + 50 = 550
-    // Commission = 550 × 10% = 55
-    // CommissionGST = 55 × 18% = 9.90
-    // Total Deductions = 55 + 9.90 + 50 = 114.90
-    // Net Payout = 550 - 114.90 = 435.10
+    // Commission = 500 × 10% = 50   <- the PRODUCT subtotal, not the gross
+    // CommissionGST = 50 × 18% = 9.00
+    // Total Deductions = 50 + 9.00 + 50 = 109.00
+    // Net Payout = 550 - 109.00 = 441.00
 
     const result = calculateSellerPayout(input());
 
     expect(result.grossAmount.toFixed(2)).toBe('550.00');
-    expect(result.commission.toFixed(2)).toBe('55.00');
-    expect(result.commissionGst.toFixed(2)).toBe('9.90');
+    expect(result.commission.toFixed(2)).toBe('50.00');
+    expect(result.commissionGst.toFixed(2)).toBe('9.00');
     expect(result.finalShippingPrice.toFixed(2)).toBe('50.00');
-    expect(result.netPayout.toFixed(2)).toBe('435.10');
+    expect(result.netPayout.toFixed(2)).toBe('441.00');
     expect(result.status).toBe('PENDING');
+  });
+
+  // The rule the two tests above and below now encode, stated once so a
+  // future reader does not "restore" the old numbers: commission is charged
+  // on the product subtotal only, never on shipping, whoever booked the
+  // courier. Shipping still sits in the gross — the buyer really did pay it —
+  // and is still withheld at step 4 on a platform-shipped order. Before this
+  // the engine charged commission on the gross, so it disagreed with the
+  // seller-facing estimate modal by commissionPercent × shipping on every
+  // platform-shipped order; the modal was the one the business considered
+  // correct.
+  it('never charges commission on shipping, platform-shipped or not', () => {
+    const platform = calculateSellerPayout(input({ sellerKeepsShipping: false }));
+    const selfShip = calculateSellerPayout(input({ sellerKeepsShipping: true }));
+
+    // 500 × 10%, identical either way — fulfilment mode governs WITHHOLDING,
+    // not the commission base.
+    expect(platform.commission.toFixed(2)).toBe('50.00');
+    expect(selfShip.commission.toFixed(2)).toBe('50.00');
+
+    // Shipping is in the gross for both, withheld only for platform-shipped.
+    expect(platform.grossAmount.toFixed(2)).toBe('550.00');
+    expect(selfShip.grossAmount.toFixed(2)).toBe('550.00');
+    expect(platform.finalShippingPrice.toFixed(2)).toBe('50.00');
+    expect(selfShip.finalShippingPrice.toFixed(2)).toBe('0.00');
+  });
+
+  // The real invoice that exposed the bug: a 15%/18% product sold at ₹11 with
+  // ₹6 shipping, platform-shipped, was billed a flat 5% and no GST at all.
+  it('reproduces the reported order at the configured rates', () => {
+    const result = calculateSellerPayout(
+      input({ baseSellingPrice: 11, quantity: 1, finalShippingPrice: 6, commissionPercent: 15 }),
+    );
+
+    expect(result.grossAmount.toFixed(2)).toBe('17.00');
+    expect(result.commission.toFixed(2)).toBe('1.65'); // 15% of 11, not of 17
+    expect(result.commissionGst.toFixed(2)).toBe('0.30'); // 18% of 1.65, not 0
+    expect(result.netPayout.toFixed(2)).toBe('9.05'); // 17 - 1.65 - 0.30 - 6
   });
 
   // Test 2: Multi-Quantity Order
   it('should scale gross correctly for multi-quantity orders', () => {
     // Gross = (200 × 3) + 30 = 630
-    // Commission = 630 × 5% = 31.50
-    // CommissionGST = 31.50 × 18% = 5.67
-    // Total Deductions = 31.50 + 5.67 + 30 = 67.17
-    // Net Payout = 630 - 67.17 = 562.83
+    // Commission = (200 × 3) × 5% = 30.00   <- product subtotal, shipping out
+    // CommissionGST = 30.00 × 18% = 5.40
+    // Total Deductions = 30.00 + 5.40 + 30 = 65.40
+    // Net Payout = 630 - 65.40 = 564.60
 
     const result = calculateSellerPayout(
       input({
@@ -48,8 +86,9 @@ describe('calculateSellerPayout', () => {
     );
 
     expect(result.grossAmount.toFixed(2)).toBe('630.00');
-    expect(result.commission.toFixed(2)).toBe('31.50');
-    expect(result.netPayout.toFixed(2)).toBe('562.83');
+    expect(result.commission.toFixed(2)).toBe('30.00');
+    expect(result.commissionGst.toFixed(2)).toBe('5.40');
+    expect(result.netPayout.toFixed(2)).toBe('564.60');
     expect(result.status).toBe('PENDING');
   });
 
@@ -156,12 +195,15 @@ describe('calculateSellerPayout', () => {
       });
       const seller = calculateSellerPayout(selfShip);
 
-      // Platform-shipped the ₹150 is withheld AND commissioned (15% of 1750,
-      // not 1600), so the gap is the shipping plus the commission and GST it
-      // dragged with it: 150 + 22.50 + 4.05 = 176.55.
-      expect(platform.netPayout.toFixed(2)).toBe('1290.25');
+      // The gap is now EXACTLY the withheld shipping, nothing more.
+      // Commission is 15% of the ₹1600 product subtotal either way, so
+      // fulfilment mode no longer drags commission and GST along with it.
+      // (It used to: platform-shipped charged 15% of the ₹1750 gross, making
+      // the gap 150 + 22.50 + 4.05 = 176.55.)
+      expect(platform.netPayout.toFixed(2)).toBe('1316.80');
+      expect(platform.commission.toFixed(2)).toBe(seller.commission.toFixed(2));
       expect(seller.netPayout.minus(platform.netPayout).toFixed(2)).toBe(
-        '176.55',
+        '150.00',
       );
     });
 
