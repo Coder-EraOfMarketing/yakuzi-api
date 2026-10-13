@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { MarkPaidDto } from './dto/mark-paid.dto';
-import { calculateSellerPayout, PayoutInput, buildPayoutInputFromOrderItem } from './payout-calculator';
+import {
+  calculateSellerPayout,
+  PayoutInput,
+  buildPayoutInputFromOrderItem,
+  payoutOfferSelect,
+} from './payout-calculator';
 import { isSelfShipOrder } from '../../common/utils/shipping.util';
 
 @Injectable()
@@ -72,7 +77,13 @@ export class SettlementsService {
     const pendingItems = await this.prisma.orderItem.findMany({
       where: pendingWhere,
       include: {
-        sellerOffer: { include: { catalogProduct: true } },
+        // payoutOfferSelect, never a hand-rolled include: the rate chain
+        // reaches the catalogue product BOTH ways (offer.catalogProductId and
+        // variantId -> variant.catalogProductId) and falls back product ->
+        // subCategory -> category. `catalogProduct: true` fetches neither the
+        // variant route nor the taxonomy rates, so a variant-linked offer
+        // projected 0% commission here in silence.
+        sellerOffer: { select: payoutOfferSelect },
         // Who shipped it decides whether shipping is withheld, and that is the
         // order's own snapshot, never the seller's current toggle.
         order: { select: { fulfillmentMode: true } },
@@ -156,9 +167,11 @@ export class SettlementsService {
         settlement: null,
       },
       include: {
-        sellerOffer: {
-          include: { catalogProduct: true },
-        },
+        // See getSellerSettlements: payoutOfferSelect loads both routes to the
+        // catalogue product and the taxonomy rates. A hand-rolled
+        // `catalogProduct: true` silently projected 0% for variant-linked
+        // offers and for products priced off a category-level rate.
+        sellerOffer: { select: payoutOfferSelect },
         // Who shipped it decides whether shipping is withheld, and that is the
         // order's own snapshot, never the seller's current toggle.
         order: { select: { fulfillmentMode: true } },
@@ -318,7 +331,11 @@ export class SettlementsService {
       },
       include: {
         seller: { select: { id: true, companyName: true, userId: true } },
-        sellerOffer: { include: { catalogProduct: true } },
+        // See getSellerSettlements: payoutOfferSelect loads both routes to the
+        // catalogue product and the taxonomy rates. This is the ADMIN
+        // settlement list, so a hand-rolled `catalogProduct: true` showed an
+        // admin 0% commission on every variant-linked offer.
+        sellerOffer: { select: payoutOfferSelect },
         // Who shipped it decides whether shipping is withheld, and that is the
         // order's own snapshot, never the seller's current toggle.
         order: { select: { fulfillmentMode: true } },
