@@ -145,6 +145,44 @@ describe('calculateSellerPayout', () => {
       commissionGstPercent: 18,
     });
 
+    /**
+     * RETURNED, not just computed internally. The settlement row records it,
+     * and the commission invoice divides the fee by it to state the rate: the
+     * stored grossAmount includes shipping, so there is no other way to
+     * recover the configured percentage after the fact.
+     */
+    it('returns the commissionable base it charged on', () => {
+      const result = calculateSellerPayout(reported);
+
+      expect(result.commissionableAmount.toFixed(2)).toBe('11.00');
+      // Gross minus the shipping, and the base the fee divides back into.
+      expect(
+        result.grossAmount.minus(result.commissionableAmount).toFixed(2),
+      ).toBe('6.00');
+      expect(
+        result.commission.dividedBy(result.commissionableAmount).times(100).toFixed(2),
+      ).toBe('15.00');
+    });
+
+    it('returns the same base whoever booked the courier', () => {
+      const self = calculateSellerPayout({
+        ...reported,
+        sellerKeepsShipping: true,
+      });
+
+      expect(self.commissionableAmount.toFixed(2)).toBe('11.00');
+    });
+
+    it('returns a base equal to the gross when there is no shipping', () => {
+      const result = calculateSellerPayout({
+        ...reported,
+        finalShippingPrice: 0,
+      });
+
+      expect(result.commissionableAmount.toFixed(2)).toBe('11.00');
+      expect(result.grossAmount.toFixed(2)).toBe('11.00');
+    });
+
     it('commissions the product only on a PLATFORM-shipped order', () => {
       // Gross = 11 + 6 = 17
       // Commissionable = 11 — NOT 17, which would have charged 2.55

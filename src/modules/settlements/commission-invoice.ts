@@ -34,8 +34,21 @@ export interface CommissionInvoice {
   payoutReference: string | null;
   issuer: CommissionInvoiceParty;
   seller: CommissionInvoiceParty;
-  /** What the buyer paid for the item, the base the commission is taken from. */
+  /**
+   * What the buyer paid for the item — the product plus shipping. This is the
+   * ORDER VALUE, NOT the base the commission is taken from: shipping is never
+   * commissioned. Read commissionableAmount for the base.
+   */
   grossAmount: number;
+  /**
+   * The base the commission was actually charged on — the product subtotal,
+   * shipping excluded, as recorded on the settlement.
+   *
+   * Null for a settlement written before the column existed. Those rows are
+   * left exactly as they are, and the rate below falls back to grossAmount,
+   * which is what they genuinely were charged on.
+   */
+  commissionableAmount: number | null;
   commissionRatePercent: number | null;
   /** The taxable value of this supply. */
   commission: number;
@@ -61,6 +74,8 @@ export interface CommissionInvoice {
 export interface SettlementForInvoice {
   id: string;
   grossAmount: Decimal | number | string;
+  /** Null or absent on a settlement written before the column existed. */
+  commissionableAmount?: Decimal | number | string | null;
   commission: Decimal | number | string;
   commissionGst: Decimal | number | string;
   netPayout: Decimal | number | string;
@@ -94,6 +109,18 @@ const num = (value: Decimal | number | string | null | undefined): number =>
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 /**
+ * A charge as a percentage of the base it was charged on, or null when there
+ * is no base to divide by.
+ *
+ * `base` must be the figure the charge was genuinely computed from. Handing it
+ * a wider total — a gross that includes shipping, say — yields a number that
+ * is arithmetically consistent with nothing and contradicts the configured
+ * rate on the invoice.
+ */
+const ratePercent = (charge: number, base: number): number | null =>
+  base > 0 ? round2((charge / base) * 100) : null;
+
+/**
  * Indian financial year, April to March — 2026-05-01 is FY 2026-27, and
  * 2026-02-01 is still 2025-26. Invoice numbers are scoped to it.
  */
@@ -120,6 +147,12 @@ export function buildCommissionInvoice(
   const issuedOn = settlement.createdAt;
 
   const grossAmount = round2(num(settlement.grossAmount));
+  // The base the commission was charged on. Null on a legacy row, which falls
+  // back to the gross — see commissionRatePercent below.
+  const commissionableAmount =
+    settlement.commissionableAmount == null
+      ? null
+      : round2(num(settlement.commissionableAmount));
   const commission = round2(num(settlement.commission));
   const totalGst = round2(num(settlement.commissionGst));
   const netPaidToSeller = round2(num(settlement.netPayout));
@@ -178,13 +211,24 @@ export function buildCommissionInvoice(
       email: settlement.seller?.email ?? null,
     },
     grossAmount,
+    commissionableAmount,
     // Derived rather than stored: the settlement keeps the money, not the rate
     // it came from, and a rate printed on an invoice has to agree with the
     // figures beside it.
-    commissionRatePercent:
-      grossAmount > 0 ? round2((commission / grossAmount) * 100) : null,
+    //
+    // Derived from the COMMISSIONABLE amount, never from the gross. The gross
+    // includes shipping and the commission is charged on the product alone, so
+    // commission/grossAmount printed 1.65/17 = 9.71% against a configured 15%
+    // — which is the client's original "shows only 5%" complaint, moved rather
+    // than fixed. Dividing by the base the money was actually computed on is
+    // the only way this agrees with the configured rate.
+    //
+    // A legacy row has no recorded base and falls back to the gross, which is
+    // what it genuinely was charged on. Those settlements are left as they are.
+    commissionRatePercent: ratePercent(commission, commissionableAmount ?? grossAmount),
     commission,
-    gstRate: commission > 0 ? round2((totalGst / commission) * 100) : null,
+    // GST really is charged on the commission, so this base is the right one.
+    gstRate: ratePercent(totalGst, commission),
     isIntraState,
     cgst,
     sgst,

@@ -1,0 +1,20 @@
+-- AlterTable
+-- The base the commission was actually charged on: the product subtotal, with
+-- shipping excluded. Added because the commission invoice had no way to print
+-- the configured rate.
+--
+-- seller_settlements stores grossAmount, which INCLUDES shipping, and no
+-- shipping column at all. Since the commission base became "gross minus
+-- shipping", a rate back-derived as commission/grossAmount is wrong on every
+-- order that carried shipping: the client's ₹11 + ₹6 order at a configured
+-- 15% printed 1.65/17 = 9.71%. The rate has to stop being derived from a
+-- number it was never computed on, and the row has to carry the number it was.
+--
+-- NULLABLE ON PURPOSE, and it stays that way. There is deliberately NO
+-- backfill and NO update here: the client's instruction is to leave existing
+-- settlements as they are. A legacy row has no recorded base, and readers
+-- fall back to grossAmount for it — which still reflects what that settlement
+-- genuinely charged, because it was charged on the gross. Backfilling
+-- gross-minus-shipping would restate history, and the shipping figure is not
+-- even stored here to do it with.
+ALTER TABLE "seller_settlements" ADD COLUMN "commissionableAmount" DECIMAL(10,2);

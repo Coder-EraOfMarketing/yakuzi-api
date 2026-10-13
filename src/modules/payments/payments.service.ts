@@ -31,10 +31,13 @@ import { NotificationsService } from '../notifications/notifications.service';
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private readonly commissionRate: number;
 
   constructor(
     private readonly prisma: PrismaService,
+    // Injected but no longer read here. It fed a `commissionRate` parsed from
+    // PLATFORM_COMMISSION_RATE (default 0.05) that nothing consumed — the last
+    // trace of the flat 5% #189 removed. Commission rates come from the
+    // catalogue taxonomy via payout-calculator, never from an env var.
     private readonly config: ConfigService,
     private readonly invoiceEmailService: InvoiceEmailService,
     private readonly webAnalytics: WebAnalyticsService,
@@ -43,11 +46,7 @@ export class PaymentsService {
     // Optional so the unit tests can construct this without it; DI (the global
     // MetaModule) always provides it in the app. Absent == Meta switched off.
     @Optional() private readonly metaCapi?: MetaCapiService,
-  ) {
-    this.commissionRate = parseFloat(
-      this.config.get<string>('PLATFORM_COMMISSION_RATE', '0.05'),
-    );
-  }
+  ) {}
 
   // ──────────────────────────────────────────────
   // BUYER: Record a payment attempt
@@ -564,6 +563,11 @@ export class PaymentsService {
           orderItemId: item.id,
           amount: breakdown.netPayout.toDecimalPlaces(2).toString(),
           grossAmount: breakdown.grossAmount.toString(),
+          // The base the commission was charged on, recorded so the commission
+          // invoice can state the configured rate. grossAmount includes
+          // shipping, so dividing the fee by THAT prints a rate the seller was
+          // never charged.
+          commissionableAmount: breakdown.commissionableAmount.toString(),
           commission: breakdown.commission.toString(),
           commissionGst: breakdown.commissionGst.toString(),
           fixedFee: '0',

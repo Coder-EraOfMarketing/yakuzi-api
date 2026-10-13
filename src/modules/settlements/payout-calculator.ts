@@ -105,6 +105,14 @@ export interface PayoutInput {
 
 export interface PayoutBreakdown {
   grossAmount: Decimal;
+  /**
+   * The base the commission was charged on — the product subtotal, with
+   * shipping excluded. Returned, and persisted on the settlement, because
+   * grossAmount includes shipping and so cannot be used to recover the rate:
+   * commission/grossAmount prints 9.71% for a configured 15% on a ₹11 + ₹6
+   * order. Anything that needs to state the rate divides by THIS.
+   */
+  commissionableAmount: Decimal;
   commission: Decimal;
   commissionGst: Decimal;
   /**
@@ -157,7 +165,10 @@ export function calculateSellerPayout(input: PayoutInput): PayoutBreakdown {
   // The commissionable amount is the PRODUCT subtotal — shipping is never part
   // of it, whoever booked the courier. Not conditional on sellerKeepsShipping:
   // that flag governs withholding at step 4, nothing here.
-  const commissionableAmount = grossAmount.minus(shipping);
+  // Rounded to 2dp because it is persisted as DECIMAL(10,2) and then divided
+  // into the commission to state the rate; an unrounded base would print a
+  // rate that disagreed with the stored column.
+  const commissionableAmount = grossAmount.minus(shipping).toDecimalPlaces(2);
   const commissionRate = new Decimal(input.commissionPercent ?? 0).dividedBy(100);
   const commission = commissionableAmount.times(commissionRate).toDecimalPlaces(2);
 
@@ -178,6 +189,7 @@ export function calculateSellerPayout(input: PayoutInput): PayoutBreakdown {
 
   return {
     grossAmount,
+    commissionableAmount,
     commission,
     commissionGst,
     finalShippingPrice: withheldShipping,

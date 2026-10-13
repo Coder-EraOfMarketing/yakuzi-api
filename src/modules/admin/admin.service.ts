@@ -2102,6 +2102,7 @@ export class AdminService {
             orderItemId: item.id,
             amount: breakdown.netPayout.toString(),
             grossAmount: breakdown.grossAmount.toString(),
+            commissionableAmount: breakdown.commissionableAmount.toString(),
             commission: breakdown.commission.toString(),
             commissionGst: breakdown.commissionGst.toString(),
             fixedFee: '0',
@@ -2261,6 +2262,11 @@ export class AdminService {
             orderItemId: item.id,
             amount: breakdown.netPayout.toString(),
             grossAmount: breakdown.grossAmount.toString(),
+            // The base the commission was charged on, recorded so the
+            // commission invoice can state the configured rate. grossAmount
+            // includes shipping, so dividing the fee by THAT prints a rate the
+            // seller was never charged.
+            commissionableAmount: breakdown.commissionableAmount.toString(),
             commission: breakdown.commission.toString(),
             commissionGst: breakdown.commissionGst.toString(),
             fixedFee: '0',
@@ -2362,6 +2368,11 @@ export class AdminService {
               orderItemId: item.id,
               amount: breakdown.netPayout.toString(),
               grossAmount: breakdown.grossAmount.toString(),
+              // The base the commission was charged on, recorded so the
+              // commission invoice can state the configured rate. grossAmount
+              // includes shipping, so dividing the fee by THAT prints a rate
+              // the seller was never charged.
+              commissionableAmount: breakdown.commissionableAmount.toString(),
               commission: breakdown.commission.toString(),
               commissionGst: breakdown.commissionGst.toString(),
               fixedFee: '0',
