@@ -778,6 +778,15 @@ model SellerSettlement {
   sellerId        String
   amount          Decimal       @db.Decimal(10, 2)
   grossAmount     Decimal       @db.Decimal(10, 2)
+  /// The base the commission was actually charged on — the product subtotal,
+  /// shipping excluded. grossAmount INCLUDES shipping, so it is NOT that base,
+  /// and a rate back-derived from it is wrong whenever shipping > 0.
+  ///
+  /// Nullable, and it stays nullable: settlements written before this column
+  /// existed have no recorded base and must not be recomputed. NULL means
+  /// "not recorded", and readers fall back to grossAmount — which is what
+  /// those rows genuinely were charged on.
+  commissionableAmount Decimal? @db.Decimal(10, 2)
   commission      Decimal       @default(0) @db.Decimal(10, 2)
   commissionGst   Decimal       @db.Decimal(10, 2)
   fixedFee        Decimal       @db.Decimal(10, 2)

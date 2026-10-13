@@ -26,6 +26,40 @@ export function formatMoney(n: number): string {
   return `Rs. ${Number(n ?? 0).toFixed(2)}`;
 }
 
+/**
+ * The invoice's single line item, as the seller reads it.
+ *
+ * Exported and pure so the text can be asserted: pdfkit compresses content
+ * streams, so the rendered buffer is not greppable, and this sentence is the
+ * one place on the document where the commission RATE is stated. The client's
+ * bug was that it stated a rate they had not configured.
+ *
+ * The rate is a percentage OF something, and that something is the product
+ * subtotal — shipping is never commissioned. Naming both makes the line add
+ * up: "at 15% of Rs. 11.00" against a Rs. 17.00 order is checkable, where
+ * "at 15%" sitting beside Rs. 17.00 reads as an arithmetic error.
+ *
+ * A settlement predating the commissionableAmount column has no recorded base
+ * and keeps the order-value-only wording, rather than claiming a base nobody
+ * stored.
+ */
+export function commissionLineDescription(invoice: CommissionInvoice): string {
+  const rate =
+    invoice.commissionRatePercent != null
+      ? ` at ${invoice.commissionRatePercent}%`
+      : '';
+  const basis =
+    invoice.commissionableAmount != null
+      ? ` of ${formatMoney(invoice.commissionableAmount)} product value` +
+        ` (order value ${formatMoney(invoice.grossAmount)}, shipping not commissioned)`
+      : ` (order value ${formatMoney(invoice.grossAmount)})`;
+
+  return (
+    `Marketplace commission${rate}${basis} on order ` +
+    `${invoice.orderReference || DASH}`
+  );
+}
+
 export function formatDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
@@ -122,21 +156,13 @@ export class CommissionInvoicePdfService {
     doc.text('GST', left + width - 100, y + 6, { width: 92, align: 'right' });
 
     y += 24;
-    const rate =
-      invoice.commissionRatePercent != null
-        ? ` at ${invoice.commissionRatePercent}%`
-        : '';
     doc
       .font('Helvetica')
       .fontSize(9)
       .fillColor('#0f172a')
-      .text(
-        `Marketplace commission${rate} on order ${invoice.orderReference || DASH}` +
-          ` (order value ${formatMoney(invoice.grossAmount)})`,
-        left + 8,
-        y,
-        { width: width - 230 },
-      );
+      .text(commissionLineDescription(invoice), left + 8, y, {
+        width: width - 230,
+      });
     doc.text(formatMoney(invoice.commission), left + width - 210, y, {
       width: 100,
       align: 'right',

@@ -31,6 +31,7 @@ describe('PayoutEmailService', () => {
       email: 'seller@example.com',
     },
     grossAmount: 1000,
+    commissionableAmount: 1000,
     commissionRatePercent: 15,
     commission: 150,
     gstRate: 18,
@@ -115,6 +116,44 @@ describe('PayoutEmailService', () => {
     expect(sent.text).toContain('27.00'); // GST on it
     expect(sent.text).toContain('823.00'); // net paid
     expect(sent.text).toContain('UTR12345'); // payment reference
+  });
+
+  it('names the base the commission was charged on, so the rate checks out', async () => {
+    // ₹11 product + ₹6 shipping at a configured 15%. Without the base named,
+    // a seller dividing 1.65 by the ₹17 order value gets 9.71% and writes in.
+    const { service, mailService } = build({
+      invoice: invoice({
+        grossAmount: 17,
+        commissionableAmount: 11,
+        commissionRatePercent: 15,
+        commission: 1.65,
+        totalGst: 0.3,
+        totalCharged: 1.95,
+        netPaidToSeller: 9.05,
+      }),
+    });
+
+    await service.settlementPaid(SETTLEMENT_ID);
+
+    const sent = (mailService.sendMail.mock.calls as SendMailOptions[][])[0][0];
+    expect(sent.text).toContain('Commissioned on:    Rs. 11.00 at 15%');
+    expect(sent.html).toContain('Commissioned on (at 15%)');
+    expect(sent.html).toContain('Rs. 11.00');
+  });
+
+  it('omits the base for a legacy settlement that never recorded one', async () => {
+    const { service, mailService } = build({
+      invoice: invoice({ commissionableAmount: null }),
+    });
+
+    await service.settlementPaid(SETTLEMENT_ID);
+
+    const sent = (mailService.sendMail.mock.calls as SendMailOptions[][])[0][0];
+    expect(sent.text).not.toContain('Commissioned on');
+    expect(sent.html).not.toContain('Commissioned on');
+    // The rest of the email is unchanged.
+    expect(sent.text).toContain('150.00');
+    expect(sent.text).toContain('823.00');
   });
 
   it('never rejects when the settlement cannot be found', async () => {

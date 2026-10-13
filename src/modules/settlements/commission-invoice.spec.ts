@@ -116,6 +116,107 @@ describe('buildCommissionInvoice', () => {
     expect(invoice.gstRate).toBe(18);
   });
 
+  /**
+   * The client's complaint was that the invoice named a rate they had not
+   * configured. #189 fixed what was CHARGED and left the printed rate derived
+   * from grossAmount — which includes shipping, while the commission is charged
+   * on the product alone. So the figure merely moved: 1.65/17 = 9.71% against a
+   * configured 15%, where before it had read 4.97%.
+   */
+  describe('the printed commission rate', () => {
+    // The real order: ₹11 product + ₹6 shipping, 15% commission, 18% GST.
+    // Charged 15% × 11 = 1.65, GST 0.30, so ₹9.05 reached the seller.
+    const reported = (over: Partial<SettlementForInvoice> = {}) =>
+      settlement({
+        grossAmount: 17,
+        commissionableAmount: 11,
+        commission: 1.65,
+        commissionGst: 0.3,
+        netPayout: 9.05,
+        ...over,
+      });
+
+    it('states the CONFIGURED rate on a shipping-bearing order', () => {
+      const invoice = buildCommissionInvoice(reported(), issuer());
+
+      // 1.65 / 11 = 15%. Dividing by the ₹17 gross would print 9.71%.
+      expect(invoice.commissionRatePercent).toBe(15);
+      expect(invoice.commissionRatePercent).not.toBe(9.71);
+    });
+
+    it('carries the base the commission was charged on, beside the gross', () => {
+      const invoice = buildCommissionInvoice(reported(), issuer());
+
+      // Both figures reach the document: the order value the buyer paid, and
+      // the product value the fee was taken on. 17 - 11 is the shipping.
+      expect(invoice.commissionableAmount).toBe(11);
+      expect(invoice.grossAmount).toBe(17);
+    });
+
+    it('still derives from grossAmount for a LEGACY settlement', () => {
+      // Existing rows are left exactly as they are — no backfill, no
+      // recompute — so commissionableAmount is NULL and the gross is the only
+      // base there is. It is also the right one: those settlements really were
+      // charged on the gross.
+      const nulled = buildCommissionInvoice(
+        reported({ commissionableAmount: null }),
+        issuer(),
+      );
+      // A row read through a client that does not know the column at all.
+      const absent = buildCommissionInvoice(
+        reported({ commissionableAmount: undefined }),
+        issuer(),
+      );
+
+      // 1.65 / 17 = 9.71 — unchanged behaviour for a row written before the fix.
+      expect(nulled.commissionRatePercent).toBe(9.71);
+      expect(absent.commissionRatePercent).toBe(9.71);
+      expect(nulled.commissionableAmount).toBeNull();
+      expect(absent.commissionableAmount).toBeNull();
+      // Nothing else about the document moves.
+      expect(nulled.commission).toBe(1.65);
+      expect(nulled.totalGst).toBe(0.3);
+      expect(nulled.netPaidToSeller).toBe(9.05);
+    });
+
+    it('is unchanged on a zero-shipping order, where base == gross', () => {
+      // ₹250 at 13%: 32.50 commission, 5.85 GST. No shipping, so the base and
+      // the gross are the same number and the two derivations agree.
+      const withBase = buildCommissionInvoice(
+        settlement({
+          grossAmount: 250,
+          commissionableAmount: 250,
+          commission: 32.5,
+          commissionGst: 5.85,
+          netPayout: 211.65,
+        }),
+        issuer(),
+      );
+      const withoutBase = buildCommissionInvoice(
+        settlement({
+          grossAmount: 250,
+          commissionableAmount: null,
+          commission: 32.5,
+          commissionGst: 5.85,
+          netPayout: 211.65,
+        }),
+        issuer(),
+      );
+
+      expect(withBase.commissionRatePercent).toBe(13);
+      expect(withoutBase.commissionRatePercent).toBe(13);
+    });
+
+    it('has no rate to state when the base is zero', () => {
+      const invoice = buildCommissionInvoice(
+        reported({ commissionableAmount: 0, commission: 0, commissionGst: 0 }),
+        issuer(),
+      );
+
+      expect(invoice.commissionRatePercent).toBeNull();
+    });
+  });
+
   it('is only a TAX invoice when the issuer has a GSTIN on file', () => {
     expect(buildCommissionInvoice(settlement(), issuer()).isTaxInvoice).toBe(true);
     expect(

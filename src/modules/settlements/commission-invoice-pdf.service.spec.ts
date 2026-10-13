@@ -1,4 +1,8 @@
-import { CommissionInvoicePdfService, formatMoney } from './commission-invoice-pdf.service';
+import {
+  CommissionInvoicePdfService,
+  commissionLineDescription,
+  formatMoney,
+} from './commission-invoice-pdf.service';
 import type { CommissionInvoice } from './commission-invoice';
 
 // pdfkit compresses content streams but not object dictionaries, so page
@@ -27,6 +31,7 @@ const invoice = (over: Partial<CommissionInvoice> = {}): CommissionInvoice => ({
     email: 'seller@example.com',
   },
   grossAmount: 1000,
+  commissionableAmount: 1000,
   commissionRatePercent: 15,
   commission: 150,
   gstRate: 18,
@@ -84,5 +89,74 @@ describe('CommissionInvoicePdfService', () => {
   it('writes Rs. rather than the rupee glyph pdfkit cannot encode', () => {
     expect(formatMoney(177)).toBe('Rs. 177.00');
     expect(formatMoney(0)).toBe('Rs. 0.00');
+  });
+
+  it('renders when the base is missing, as on a legacy settlement', async () => {
+    const buffer = await service.render(invoice({ commissionableAmount: null }));
+
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+    expect(pageCount(buffer)).toBe(1);
+  });
+});
+
+/**
+ * The sentence the client actually reads. This is the only place the
+ * commission RATE appears on the document, and the whole bug was that it named
+ * a rate nobody had configured.
+ */
+describe('commissionLineDescription', () => {
+  // The client's real order: ₹11 product + ₹6 shipping, 15% configured.
+  const reported = invoice({
+    grossAmount: 17,
+    commissionableAmount: 11,
+    commissionRatePercent: 15,
+    commission: 1.65,
+    totalGst: 0.3,
+  });
+
+  it('prints the configured rate against the product value, not the gross', () => {
+    const line = commissionLineDescription(reported);
+
+    expect(line).toBe(
+      'Marketplace commission at 15% of Rs. 11.00 product value ' +
+        '(order value Rs. 17.00, shipping not commissioned) on order ABAF6047',
+    );
+  });
+
+  it('never prints the gross-derived 9.71%', () => {
+    expect(commissionLineDescription(reported)).not.toContain('9.71');
+  });
+
+  it('keeps the order-value-only wording for a legacy settlement', () => {
+    // No recorded base, so it claims none. The rate on such a row is still
+    // derived from the gross, which is what it was genuinely charged on.
+    const line = commissionLineDescription(
+      invoice({
+        grossAmount: 17,
+        commissionableAmount: null,
+        commissionRatePercent: 9.71,
+      }),
+    );
+
+    expect(line).toBe(
+      'Marketplace commission at 9.71% (order value Rs. 17.00) on order ABAF6047',
+    );
+    expect(line).not.toContain('product value');
+  });
+
+  it('states no rate when there is none to state', () => {
+    const line = commissionLineDescription(
+      invoice({ commissionRatePercent: null, commissionableAmount: null }),
+    );
+
+    expect(line).toBe(
+      'Marketplace commission (order value Rs. 1000.00) on order ABAF6047',
+    );
+  });
+
+  it('falls back to a dash for a missing order reference', () => {
+    expect(commissionLineDescription(invoice({ orderReference: '' }))).toContain(
+      'on order —',
+    );
   });
 });

@@ -109,6 +109,16 @@ export class PayoutEmailService {
       `Your payout for order ${invoice.orderReference || DASHLESS} has been sent.`,
       '',
       `Order value:        ${money(invoice.grossAmount)}`,
+      // Named so the commission below can be checked against something. The
+      // order value includes shipping, which is never commissioned, so
+      // commission/order value is not the rate. Omitted for a settlement
+      // predating the column, which has no recorded base.
+      ...(invoice.commissionableAmount != null
+        ? [
+            `Commissioned on:    ${money(invoice.commissionableAmount)}` +
+              `${invoice.commissionRatePercent != null ? ` at ${invoice.commissionRatePercent}%` : ''}`,
+          ]
+        : []),
       `Commission:         ${money(invoice.commission)}`,
       `GST on commission:  ${money(invoice.totalGst)}`,
       `Paid to you:        ${money(invoice.netPaidToSeller)}`,
@@ -136,6 +146,17 @@ export class PayoutEmailService {
   <p>Your payout for order <strong>${this.escape(invoice.orderReference)}</strong> has been sent.</p>
   <table style="border-collapse:collapse;margin:16px 0">
     ${row('Order value', money(invoice.grossAmount))}
+    ${
+      invoice.commissionableAmount != null
+        ? row(
+            'Commissioned on' +
+              (invoice.commissionRatePercent != null
+                ? ` (at ${invoice.commissionRatePercent}%)`
+                : ''),
+            money(invoice.commissionableAmount),
+          )
+        : ''
+    }
     ${row('Commission', money(invoice.commission))}
     ${row('GST on commission', money(invoice.totalGst))}
     ${row('Paid to you', money(invoice.netPaidToSeller), true)}

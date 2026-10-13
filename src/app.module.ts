@@ -71,7 +71,6 @@ import { WebAnalyticsModule } from './modules/web-analytics/web-analytics.module
         CORS_ORIGINS: Joi.string().default(
           'http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:5173,https://yukizi-web-admin.vercel.app,https://yukizi-web-seller.vercel.app,https://yukizi-web-buyer.vercel.app,https://seller.yukizi.com,https://admin.yukizi.com,https://yukizi-api.onrender.com/api,https://yukizi-api.onrender.com,https://yukizi.in,https://www.yukizi.in,https://admin.yukizi.in,https://seller.yukizi.in,http://api.yukizi.in,api.yukizi.in',
         ),
-        PLATFORM_COMMISSION_RATE: Joi.number().default(0.05),
         IDFY_ACCOUNT_ID: Joi.string().allow('').optional(),
         IDFY_API_KEY: Joi.string().allow('').optional(),
         IDFY_MOCK_MODE: Joi.string().allow('').optional(),
