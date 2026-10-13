@@ -970,6 +970,26 @@ model CatalogProduct {
   shippingCharges    Decimal  @default(0) @db.Decimal(10, 2)
   finalShippingPrice Decimal? @db.Decimal(10, 2)
 
+  /// The cheapest final customer payable across this product's live offers —
+  /// the number the grid card actually prints. Denormalised onto the master
+  /// because price lives on SellerOffer, and "sort by price" has to happen in
+  /// SQL for pagination to be right: ordering in JS would only ever sort the
+  /// one page already fetched.
+  ///
+  /// `mrp` above is NOT that number. It is the master's own list price, null
+  /// on nearly every row, which is why the old `orderBy: { mrp }` behind
+  /// sortBy=price was a silent no-op — asc and desc returned byte-identical
+  /// pages. It is also not what the shopper sees: the card shows the best
+  /// offer's computed payable, not the master's list price.
+  ///
+  /// Null means nobody is selling this product right now. Those sort LAST in
+  /// both directions (see findAll) — an unsold product must not head the list
+  /// when a shopper asks for most-expensive-first.
+  ///
+  /// Maintained by recalculateLowestOfferPrice(), which runs off every offer
+  /// write and off every change to whether an offer is sellable.
+  lowestOfferPrice   Decimal? @db.Decimal(10, 2)
+
   commissionPercent    Decimal? @db.Decimal(10, 2)
   fixedFee             Decimal? @db.Decimal(10, 2)
   commissionGstPercent Decimal? @db.Decimal(10, 2)
@@ -1016,6 +1036,8 @@ model CatalogProduct {
   @@index([externalId])
   @@index([isActive])
   @@index([deletedAt])
+  // Sort key for the main browse query, so it is indexed like one.
+  @@index([lowestOfferPrice])
   @@map("catalog_products")
 }
 

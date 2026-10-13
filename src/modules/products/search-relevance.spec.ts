@@ -122,7 +122,12 @@ describe('ProductsService.findAll ranked search', () => {
 
     expect(prisma.catalogProduct.findMany).toHaveBeenCalledTimes(1);
     const arg = prisma.catalogProduct.findMany.mock.calls[0][0];
-    expect(Object.keys(arg.orderBy)[0]).toBe('mrp'); // 'price' maps to the mrp column
+    // 'price' maps to lowestOfferPrice, the denormalised cheapest live offer.
+    // It used to map to CatalogProduct.mrp — the master's own list price, null
+    // on nearly every row, which made the sort a no-op.
+    expect(arg.orderBy).toEqual({
+      lowestOfferPrice: { sort: 'desc', nulls: 'last' },
+    });
     expect(JSON.stringify(arg.where)).toContain('description');
   });
 });

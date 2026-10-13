@@ -1149,6 +1149,11 @@ export class AdminService {
       select: { id: true, name: true, isActive: true, updatedAt: true },
     });
 
+    // Taking an offer off sale can raise its master's lowest price. No price
+    // changed, so recalculateFinalCustomerPayable never runs here — without
+    // this the shelf keeps advertising a figure nobody can buy at.
+    await this.productsService.recalculateLowestOfferPriceForOffer(sellerOfferId);
+
     this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} disabled by admin`);
     return updated;
@@ -1168,6 +1173,10 @@ export class AdminService {
       select: { id: true, name: true, isActive: true, updatedAt: true },
     });
 
+    // Putting an offer back on sale adds a candidate to its master's minimum,
+    // which can only lower it. Same reason as disableProduct: no price changed.
+    await this.productsService.recalculateLowestOfferPriceForOffer(sellerOfferId);
+
     this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} enabled by admin`);
     return updated;
@@ -1186,6 +1195,9 @@ export class AdminService {
       data: { deletedAt: new Date(), isActive: false },
       select: { id: true, name: true, isActive: true, deletedAt: true },
     });
+
+    // Soft-deleting drops the offer from its master's minimum.
+    await this.productsService.recalculateLowestOfferPriceForOffer(sellerOfferId);
 
     this.revalidateOffer(sellerOfferId);
     this.logger.log(`Product ${sellerOfferId} soft-deleted by admin`);
@@ -1272,6 +1284,12 @@ export class AdminService {
       },
     });
 
+    // Approval is also the moment the offer joins its master's price minimum —
+    // and this path has just attached it to a variant, so the master it counts
+    // against may only exist as of this write. Before the revalidation ping, so
+    // the storefront re-fetches a page whose price is already correct.
+    await this.productsService.recalculateLowestOfferPriceForOffer(sellerOfferId);
+
     // Approval is the moment the offer becomes buyable, so it is the one that
     // most needs the shelves it appears on dropped straight away.
     this.revalidateOffer(sellerOfferId);
@@ -1305,6 +1323,9 @@ export class AdminService {
         seller: { select: { id: true, companyName: true } },
       },
     });
+
+    // Rejection deactivates the offer, so it leaves its master's minimum.
+    await this.productsService.recalculateLowestOfferPriceForOffer(sellerOfferId);
 
     this.revalidateOffer(sellerOfferId);
     this.logger.log(
@@ -3981,7 +4002,12 @@ export class AdminService {
 
       return tx.catalogProduct.update({
         where: { id },
-        data: { deletedAt, isActive: false },
+        // The updateMany above just soft-deleted every offer of this product by
+        // both routes, so its lowest live offer price is definitionally gone.
+        // Set here rather than via recalculateLowestOfferPriceForOffer: the
+        // answer is known without a query, it belongs in the same transaction,
+        // and a restored product must not come back advertising a dead price.
+        data: { deletedAt, isActive: false, lowestOfferPrice: null },
       });
     });
 
