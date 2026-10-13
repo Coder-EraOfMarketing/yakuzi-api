@@ -10,10 +10,20 @@ import { Decimal } from '@prisma/client/runtime/library';
  * and the supply is a service — the commission, on which GST has already been
  * charged and deducted at source by the payout calculator.
  *
- * Nothing is stored: every figure is derived from the settlement row that was
- * written when the order was delivered. That matters because the deploy runs
- * `prisma generate` but never `prisma migrate deploy`, so a new table would
- * exist in the client and not in the database.
+ * The document itself is not stored: every figure is derived from the
+ * settlement row that was written when the order was delivered, so an invoice
+ * cannot drift from the money it describes.
+ *
+ * "Derived" does NOT stretch to the commission RATE. A rate has to be divided
+ * out of the base it was charged on, and grossAmount includes shipping while
+ * the commission does not — so the base is RECORDED on the settlement
+ * (commissionableAmount) rather than reverse-engineered here. See
+ * commissionRatePercent below for what went wrong when it was.
+ *
+ * (An earlier note here claimed the deploy runs `prisma generate` but never
+ * `prisma migrate deploy`, and reasoned from that against new columns. It is
+ * not true: deploy-api.yml applies migrations before the new build goes live,
+ * and `start:prod` runs `prisma db push` on top of that.)
  */
 
 export interface CommissionInvoiceParty {
