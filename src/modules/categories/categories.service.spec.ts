@@ -154,7 +154,7 @@ describe('CategoriesService.updateCategory — rename creates a category URL red
   const buildForRename = () => {
     const prisma = {
       category: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'cat-1', name: 'Figurines', slug: 'figurines' }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'cat-1', name: 'Figurines', slug: 'figurines', subCategories: [] }),
         findFirst: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue({}),
       },
@@ -216,7 +216,7 @@ describe('CategoriesService.updateCategory — rename combined with other edits'
   it('carries description/image edits into the rename transaction (no silent drop)', async () => {
     const prisma = {
       category: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'cat-1', name: 'Figurines', slug: 'figurines' }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'cat-1', name: 'Figurines', slug: 'figurines', subCategories: [] }),
         findFirst: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue({}),
       },
@@ -293,5 +293,158 @@ describe('CategoriesService.generateSlug — accent folding', () => {
     ['Wall Hanging', 'wall-hanging'],
   ])('leaves the existing slug for %s unchanged', (name, expected) => {
     expect(slug(name)).toBe(expected);
+  });
+});
+
+describe('CategoriesService.updateSubCategory — rename creates a URL redirect', () => {
+  const buildForSubRename = (subCategories: unknown[] = []) => {
+    const prisma = {
+      subCategory: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'sub-1',
+          name: 'Pokémon',
+          slug: 'pokmon',
+          categoryId: 'cat-1',
+          category: { slug: 'trading-cards' },
+        }),
+        findFirst: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      seoRedirect: {
+        deleteMany: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({}),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    };
+    void subCategories;
+    const service = new CategoriesService(prisma as never);
+    return { service, prisma };
+  };
+
+  it('301s the old sub-category URL, nesting it under the parent slug', async () => {
+    const { service, prisma } = buildForSubRename();
+
+    await service.updateSubCategory('sub-1', { name: 'Pokemon' } as never);
+
+    const upsert = prisma.seoRedirect.upsert.mock.calls[0][0] as {
+      where: { fromPath: string };
+      create: { toPath: string; statusCode: number };
+    };
+    expect(upsert.where).toEqual({ fromPath: '/category/trading-cards/pokmon' });
+    expect(upsert.create.toPath).toBe('/category/trading-cards/pokemon');
+    expect(upsert.create.statusCode).toBe(301);
+    expect(prisma.subCategory.update).toHaveBeenCalled();
+  });
+
+  it('loads the parent slug — the redirect path cannot be built without it', async () => {
+    const { service, prisma } = buildForSubRename();
+
+    await service.updateSubCategory('sub-1', { name: 'Pokemon' } as never);
+
+    // Asserting the QUERY, not the result: a mock returns whatever the test
+    // built, so dropping the include would leave every behavioural test green.
+    const args = prisma.subCategory.findUnique.mock.calls[0][0] as {
+      include?: { category?: unknown };
+    };
+    expect(args.include?.category).toBeTruthy();
+  });
+
+  it('scopes the collision check to the parent category', async () => {
+    const { service, prisma } = buildForSubRename();
+
+    await service.updateSubCategory('sub-1', { name: 'Pokemon' } as never);
+
+    // Sub-slugs are unique per parent (@@unique([slug, categoryId])), so an
+    // unscoped check would reject a rename that is legal under another parent.
+    const where = prisma.subCategory.findFirst.mock.calls[0][0] as {
+      where: { categoryId?: string };
+    };
+    expect(where.where.categoryId).toBe('cat-1');
+  });
+
+  it('skips only the 301 when slugRedirect is false', async () => {
+    const { service, prisma } = buildForSubRename();
+
+    await service.updateSubCategory('sub-1', {
+      name: 'Pokemon',
+      slugRedirect: false,
+    } as never);
+
+    expect(prisma.seoRedirect.upsert).not.toHaveBeenCalled();
+    expect(prisma.subCategory.update).toHaveBeenCalled();
+  });
+
+  it('rejects a rename colliding with a sibling under the same parent', async () => {
+    const { service, prisma } = buildForSubRename();
+    prisma.subCategory.findFirst.mockResolvedValue({ id: 'sub-2' });
+
+    await expect(
+      service.updateSubCategory('sub-1', { name: 'Pokemon' } as never),
+    ).rejects.toThrow('already uses the URL');
+  });
+
+  it('creates no redirect when the name does not change the slug', async () => {
+    const { service, prisma } = buildForSubRename();
+
+    await service.updateSubCategory('sub-1', { name: 'Pokmon' } as never);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.seoRedirect.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('CategoriesService.updateCategory — a parent rename moves its children too', () => {
+  const buildWithChildren = () => {
+    const prisma = {
+      category: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'cat-1',
+          name: 'Figurines',
+          slug: 'figurines',
+          subCategories: [{ slug: 'action-figures' }, { slug: 'anime' }],
+        }),
+        findFirst: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      seoRedirect: {
+        deleteMany: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({}),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    };
+    const service = new CategoriesService(prisma as never);
+    return { service, prisma };
+  };
+
+  it('301s every child URL under the new parent slug', async () => {
+    const { service, prisma } = buildWithChildren();
+
+    await service.updateCategory('cat-1', { name: 'Figures' } as never);
+
+    const pairs = prisma.seoRedirect.upsert.mock.calls.map(
+      (c) =>
+        [
+          (c[0] as { where: { fromPath: string } }).where.fromPath,
+          (c[0] as { create: { toPath: string } }).create.toPath,
+        ] as const,
+    );
+    expect(pairs).toEqual([
+      ['/category/figurines', '/category/figures'],
+      ['/category/figurines/action-figures', '/category/figures/action-figures'],
+      ['/category/figurines/anime', '/category/figures/anime'],
+    ]);
+  });
+
+  it('loads the children — without the include they are silently skipped', async () => {
+    const { service, prisma } = buildWithChildren();
+
+    await service.updateCategory('cat-1', { name: 'Figures' } as never);
+
+    const args = prisma.category.findUnique.mock.calls[0][0] as {
+      include?: { subCategories?: unknown };
+    };
+    expect(args.include?.subCategories).toBeTruthy();
   });
 });
