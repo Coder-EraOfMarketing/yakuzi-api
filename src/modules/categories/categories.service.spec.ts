@@ -244,3 +244,54 @@ describe('CategoriesService.updateCategory — rename combined with other edits'
     expect(prisma.seoRedirect.upsert).toHaveBeenCalled();
   });
 });
+
+describe('CategoriesService.generateSlug — accent folding', () => {
+  // generateSlug is private; it is pure, so call it directly rather than
+  // driving it through a mocked create/update for every case.
+  const slug = (name: string): string =>
+    (new CategoriesService({} as never) as never as {
+      generateSlug(n: string): string;
+    }).generateSlug(name);
+
+  it('transliterates accents instead of deleting them', () => {
+    // The bug: "é" was stripped by the [^a-z0-9\s-] class, so the live URL
+    // shipped as /category/trading-cards/pokmon while the heading rendered
+    // "Pokémon".
+    expect(slug('Pokémon')).toBe('pokemon');
+  });
+
+  it('handles other common diacritics', () => {
+    expect(slug('Café')).toBe('cafe');
+    expect(slug('Naïve')).toBe('naive');
+    expect(slug('Pokémon Café')).toBe('pokemon-cafe');
+  });
+
+  // Load-bearing: these are live URLs. The accent fold must be inert for every
+  // name currently in the database, or renaming any of them silently moves a
+  // public page. Pulled from /api/products/categories on 2026-10-24.
+  it.each([
+    ['Books', 'books'],
+    ['Collectables', 'collectables'],
+    ['Cosplay & Props', 'cosplay-props'],
+    ['Die-Cast', 'die-cast'],
+    ['Figurines', 'figurines'],
+    ['Funko Pop', 'funko-pop'],
+    ['Gaming', 'gaming'],
+    ['Merch', 'merch'],
+    ['Pre-Order', 'pre-order'],
+    ['Trading Cards', 'trading-cards'],
+    ['General', 'general'],
+    ['Anime & Manga', 'anime-manga'],
+    ['Comics', 'comics'],
+    ['Figures & Statues', 'figures-statues'],
+    ['Head Gear', 'head-gear'],
+    ['Hot Wheels', 'hot-wheels'],
+    ['Action Figures', 'action-figures'],
+    ['Anime', 'anime'],
+    ['Keyboard Skins', 'keyboard-skins'],
+    ['Desk Toys', 'desk-toys'],
+    ['Wall Hanging', 'wall-hanging'],
+  ])('leaves the existing slug for %s unchanged', (name, expected) => {
+    expect(slug(name)).toBe(expected);
+  });
+});

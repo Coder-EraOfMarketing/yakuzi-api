@@ -27,12 +27,27 @@ export class CategoriesService {
   // ──────────────────────────────────────────────
 
   private generateSlug(name: string): string {
-    return name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
+    return (
+      name
+        .trim()
+        .toLowerCase()
+        // Fold accents to their ASCII base BEFORE the strip below, or the
+        // accented letter is deleted outright rather than transliterated:
+        // "Pokémon" became "pokmon", a misspelled public URL shipped in the
+        // sitemap. NFKD splits "é" into "e" + a combining mark, and the mark
+        // is removed here.
+        //
+        // Deliberately NOT switched to the `slugify` package used elsewhere in
+        // this codebase: that would change slug generation for every name, and
+        // these slugs are live URLs. This two-line addition is provably inert
+        // for plain-ASCII names — see the spec, which pins all 20 current
+        // category and sub-category names to their existing slugs.
+        .normalize('NFKD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+    );
   }
 
   async createCategory(dto: CreateCategoryDto) {
