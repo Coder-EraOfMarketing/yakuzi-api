@@ -964,13 +964,29 @@ export class AuthService {
     const payload = { sub: userId, role };
     const secret = this.configService.get<string>('JWT_SECRET') || 'yukizi_fallback_secret_key_2026';
 
-    // The admin panel has no token-refresh loop — when the access token
-    // expires, the 401 interceptor logs the admin out mid-work. Admins get a
-    // longer working session; buyer/seller token lifetimes are unchanged.
+    // Neither the admin panel NOR the seller portal has a token-refresh loop:
+    // both ship the same interceptor, which on any 401 calls clearTokens() +
+    // logout() and hard-redirects to /auth — no refresh attempt, no error
+    // shown. On a 15m access token that silently returns the seller to a blank
+    // login page mid-session, which reads as "I enter the OTP and it just asks
+    // again". Seller onboarding alone (GST, PAN, drug licence, address) takes
+    // longer than 15 minutes.
+    //
+    // Admins were given a longer session for exactly this reason; sellers have
+    // the same constraint and were missed. Buyers keep 15m because the buyer
+    // app DOES refresh (packages/api-client/src/api.ts queues the 401, calls
+    // /auth/refresh and retries), so a short token there is invisible.
+    //
+    // This is mitigation, not the fix. The real fix is porting that refresh
+    // loop into apps/seller (and apps/admin) — the refresh token is already
+    // issued and /auth/refresh already exists. Until then, do not shorten this
+    // without adding refresh first.
     const accessExpiresIn =
       role === Role.ADMIN
         ? this.configService.get<string>('JWT_ADMIN_ACCESS_EXPIRES', '8h')
-        : this.configService.get<string>('JWT_ACCESS_EXPIRES', '15m');
+        : role === Role.SELLER
+          ? this.configService.get<string>('JWT_SELLER_ACCESS_EXPIRES', '8h')
+          : this.configService.get<string>('JWT_ACCESS_EXPIRES', '15m');
     const refreshExpiresIn = this.configService.get<string>(
       'JWT_REFRESH_EXPIRES',
       '7d',
