@@ -106,12 +106,30 @@ describe('AdminService.adminUpdateOrderStatus — Shiprocket wiring', () => {
     );
   });
 
+  // Was written against CANCELLED purely as a stand-in for "not
+  // READY_TO_SHIP"; CANCELLED is now refused by this method outright (it
+  // cannot restore stock). SHIPPED is the replacement stand-in: like the
+  // original it carries no side effect of its own here, whereas ACCEPTED
+  // would have pulled in notifyBuyerAccepted.
   it('does not touch Shiprocket for any other status transition', async () => {
     const { service, ordersService } = build();
     await service.adminUpdateOrderStatus('order-1', {
-      status: OrderStatus.CANCELLED,
+      status: OrderStatus.SHIPPED,
     } as never);
     expect(ordersService.pushOrderToShiprocketIfNeeded).not.toHaveBeenCalled();
+  });
+
+  it('refuses to set CANCELLED, which would strand the stock', async () => {
+    // The silent bug this guard closes: this method is a bare orderStatus
+    // write, so cancelling through it changed the badge and never gave the
+    // units back.
+    const { service, prisma } = build();
+    await expect(
+      service.adminUpdateOrderStatus('order-1', {
+        status: OrderStatus.CANCELLED,
+      } as never),
+    ).rejects.toThrow('Use the cancel action');
+    expect(prisma.order.update).not.toHaveBeenCalled();
   });
 
   it('notifies the buyer on every admin status change, not just READY_TO_SHIP', async () => {
@@ -1573,5 +1591,141 @@ describe('AdminService — orders from buyers with no phone', () => {
 
     expect(classify({ id: 'x', buyer: { phone: null } }, ['8500237151'], { real: [], test: [] }))
       .toEqual({ isTest: false, classification: 'auto' });
+  });
+});
+
+describe('AdminService.adminCancelOrder', () => {
+  // Deliberately NOT reusing build()'s baseOrder: that one is
+  // SUCCESS-paid with no refund, which is exactly the case this method is
+  // supposed to refuse, so every happy-path test would have to fight it.
+  const buildCancel = (
+    order: Partial<{
+      paymentStatus: PaymentStatus;
+      refundedAt: Date | null;
+    }> = {},
+  ) => {
+    const prisma = {
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'order-1',
+          buyerId: 'buyer-1',
+          paymentStatus: PaymentStatus.PENDING,
+          refundedAt: null,
+          ...order,
+        }),
+        update: jest.fn(),
+      },
+      sellerSettlement: { findUnique: jest.fn() },
+    };
+    const ordersService = {
+      cancelOrder: jest.fn().mockResolvedValue({ id: 'order-1' }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      ordersService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      mockConfigService as never,
+      payoutEmailStub as never,
+      commissionInvoiceStub as never,
+      commissionInvoicePdfStub as never,
+      buyerEmailsStub as never,
+    );
+    return { service, prisma, ordersService };
+  };
+
+  it('delegates to cancelOrder with the paid-order override', async () => {
+    // The override is the whole point: without it this is just the
+    // self-service cancel, which refuses a paid order.
+    const { service, ordersService } = buildCancel();
+
+    await service.adminCancelOrder('order-1', {
+      reason: 'Seller cannot fulfil',
+    } as never);
+
+    expect(ordersService.cancelOrder).toHaveBeenCalledWith(
+      'buyer-1',
+      'order-1',
+      Role.ADMIN,
+      'Seller cannot fulfil',
+      'cancellation',
+      { allowPaidOrder: true },
+    );
+  });
+
+  it('refuses a paid order with no refund recorded or confirmed', async () => {
+    const { service, ordersService } = buildCancel({
+      paymentStatus: PaymentStatus.SUCCESS,
+    });
+
+    await expect(
+      service.adminCancelOrder('order-1', { reason: 'Changed mind' } as never),
+    ).rejects.toThrow('no refund is recorded against it');
+    // Nothing cancelled, so nothing restocked — the money check runs first.
+    expect(ordersService.cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('allows a paid order once a refund has been recorded', async () => {
+    const { service, ordersService } = buildCancel({
+      paymentStatus: PaymentStatus.SUCCESS,
+      refundedAt: new Date('2026-10-29T00:00:00Z'),
+    });
+
+    await service.adminCancelOrder('order-1', { reason: 'Refunded' } as never);
+
+    expect(ordersService.cancelOrder).toHaveBeenCalled();
+  });
+
+  it('allows a paid order when the admin confirms they handled the refund', async () => {
+    // Refunds issued straight from the Razorpay dashboard never touch
+    // recordRefund(), so refundedAt stays null for a genuinely refunded
+    // order. The explicit confirmation is the way through.
+    const { service, ordersService } = buildCancel({
+      paymentStatus: PaymentStatus.SUCCESS,
+    });
+
+    await service.adminCancelOrder('order-1', {
+      reason: 'Refunded via Razorpay',
+      refundHandled: true,
+    } as never);
+
+    expect(ordersService.cancelOrder).toHaveBeenCalled();
+  });
+
+  it('treats a PARTIAL payment as paid', async () => {
+    // PaymentsService only sets PARTIAL after a real payment is verified —
+    // it is not "not paid yet".
+    const { service, ordersService } = buildCancel({
+      paymentStatus: PaymentStatus.PARTIAL,
+    });
+
+    await expect(
+      service.adminCancelOrder('order-1', { reason: 'Changed mind' } as never),
+    ).rejects.toThrow('no refund is recorded against it');
+    expect(ordersService.cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('needs no refund confirmation for an unpaid order', async () => {
+    const { service, ordersService } = buildCancel({
+      paymentStatus: PaymentStatus.PENDING,
+    });
+
+    await service.adminCancelOrder('order-1', {
+      reason: 'Never paid',
+    } as never);
+
+    expect(ordersService.cancelOrder).toHaveBeenCalled();
+  });
+
+  it('404s an order that does not exist', async () => {
+    const { service, prisma, ordersService } = buildCancel();
+    prisma.order.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.adminCancelOrder('nope', { reason: 'whatever' } as never),
+    ).rejects.toThrow(NotFoundException);
+    expect(ordersService.cancelOrder).not.toHaveBeenCalled();
   });
 });

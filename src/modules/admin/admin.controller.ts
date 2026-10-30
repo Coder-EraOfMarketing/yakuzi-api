@@ -38,6 +38,7 @@ import { AdminQueryPaymentsDto } from './dto/query-payments.dto';
 import { AdminQuerySettlementsDto } from './dto/query-settlements.dto';
 import { AdminQueryTicketsDto } from './dto/query-tickets.dto';
 import { AdminUpdateOrderStatusDto } from './dto/admin-update-order-status.dto';
+import { AdminCancelOrderDto } from './dto/admin-cancel-order.dto';
 import { ClassifyOrderDto } from './dto/classify-order.dto';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
@@ -360,6 +361,27 @@ export class AdminController {
   ) {
     const data = await this.adminService.adminUpdateOrderStatus(id, dto);
     return { message: 'Order status updated successfully', data };
+  }
+
+  @Patch('orders/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Cancel an order and restore its stock — including an order that has been paid',
+  })
+  @ApiResponse({ status: 200, description: 'Order cancelled' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Order is in a status that cannot be cancelled, or is paid with no refund recorded or confirmed',
+  })
+  @ApiResponse({ status: 404, description: 'Order not found' })
+  async adminCancelOrder(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AdminCancelOrderDto,
+  ) {
+    const data = await this.adminService.adminCancelOrder(id, dto);
+    return { message: 'Order cancelled successfully', data };
   }
 
   @Patch('orders/:id/refund')
