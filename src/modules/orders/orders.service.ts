@@ -2173,6 +2173,22 @@ export class OrdersService {
      * chance to get them back.
      */
     notify: 'cancellation' | 'none' = 'cancellation',
+    /**
+     * Deliberate admin override of the confirmed-payment refusal below.
+     *
+     * Only AdminController's cancel route sets this, and that route is
+     * @Roles(ADMIN). Never expose it to the buyer-facing path: the refusal
+     * exists to stop Razorpay's ondismiss auto-cancel from restocking an
+     * order whose payment just succeeded, and that race is exactly what a
+     * buyer can trigger by accident.
+     *
+     * An admin pressing cancel on an order they can see is paid is the
+     * opposite: a considered decision, made with the refund in front of
+     * them. Before this existed they had no correct way to do it — the
+     * self-service path refused, recordRefund() only wrote the money fields,
+     * and the status dropdown set CANCELLED without ever restoring stock.
+     */
+    options: { allowPaidOrder?: boolean } = {},
   ) {
     // 1. Fetch order
     const order = await this.prisma.order.findUnique({
@@ -2233,7 +2249,7 @@ export class OrdersService {
       PaymentStatus.SUCCESS,
       PaymentStatus.PARTIAL,
     ];
-    if (paidStatuses.includes(order.paymentStatus)) {
+    if (!options.allowPaidOrder && paidStatuses.includes(order.paymentStatus)) {
       throw new BadRequestException(
         'This order has a confirmed payment and cannot be cancelled here. Contact support for a refund.',
       );
@@ -2245,8 +2261,17 @@ export class OrdersService {
       // above): if a payment was confirmed in the gap since the check
       // above, this write matches zero rows and the whole cancel aborts
       // before anything else in this transaction has run.
+      // The admin override still races, just against something else: the
+      // payment is already known-paid, so what must not change underneath is
+      // the STATUS — a concurrent ship or deliver between the read above and
+      // this write would otherwise be cancelled and restocked after the goods
+      // had left. Each path guards the condition that can actually move.
+      const raceGuard = options.allowPaidOrder
+        ? { orderStatus: { notIn: uncancelable } }
+        : { paymentStatus: { notIn: paidStatuses } };
+
       const guardedUpdate = await tx.order.updateMany({
-        where: { id: orderId, paymentStatus: { notIn: paidStatuses } },
+        where: { id: orderId, ...raceGuard },
         data: {
           orderStatus: OrderStatus.CANCELLED,
           // Written in the same guarded statement as the status, so an order
@@ -2257,7 +2282,9 @@ export class OrdersService {
       });
       if (guardedUpdate.count === 0) {
         throw new BadRequestException(
-          'This order has a confirmed payment and cannot be cancelled here. Contact support for a refund.',
+          options.allowPaidOrder
+            ? 'This order moved to a status that cannot be cancelled while you were cancelling it. Reload the order and check where it is.'
+            : 'This order has a confirmed payment and cannot be cancelled here. Contact support for a refund.',
         );
       }
       const cancelled = await tx.order.findUniqueOrThrow({ where: { id: orderId } });

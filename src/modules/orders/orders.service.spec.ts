@@ -1107,6 +1107,96 @@ describe('OrdersService.cancelOrder', () => {
     ).rejects.toThrow('Cannot cancel order in CANCELLED status');
   });
 
+  // ── The admin override ───────────────────────────────────────────────
+  // Everything above is the self-service path, which must keep refusing a
+  // paid order. These cover the deliberate admin override that AdminService
+  // passes — before it existed, a paid order could not be correctly
+  // cancelled from the admin panel at all.
+
+  it('cancels a paid order when the admin override is passed', async () => {
+    const { service, prisma } = build({ paymentStatus: PaymentStatus.SUCCESS });
+
+    await service.cancelOrder(
+      'admin-1',
+      'order-1',
+      Role.ADMIN,
+      'Seller cannot fulfil',
+      'cancellation',
+      { allowPaidOrder: true },
+    );
+
+    expect(prisma.order.updateMany).toHaveBeenCalled();
+  });
+
+  it('guards the override on STATUS, not payment — the payment is knowingly paid', async () => {
+    // The self-service path guards paymentStatus because that is what can
+    // change under it. For an admin cancelling a known-paid order the live
+    // hazard is the order shipping mid-cancel, so that is what the
+    // transactional guard has to watch.
+    const { service, prisma } = build({ paymentStatus: PaymentStatus.SUCCESS });
+
+    await service.cancelOrder(
+      'admin-1',
+      'order-1',
+      Role.ADMIN,
+      'Seller cannot fulfil',
+      'cancellation',
+      { allowPaidOrder: true },
+    );
+
+    const where = prisma.order.updateMany.mock.calls[0][0].where;
+    expect(where.paymentStatus).toBeUndefined();
+    expect(where.orderStatus).toEqual({
+      notIn: [
+        OrderStatus.SHIPPED,
+        OrderStatus.DELIVERED,
+        OrderStatus.RETURNED,
+        OrderStatus.CANCELLED,
+      ],
+    });
+  });
+
+  it('still refuses a SHIPPED order even with the override', async () => {
+    // The override buys past the payment check, not past the status check.
+    // Cancelling and restocking goods already with the courier would be a
+    // worse bug than the one it fixes.
+    const { service, prisma } = build({
+      orderStatus: OrderStatus.SHIPPED,
+      paymentStatus: PaymentStatus.SUCCESS,
+    });
+
+    await expect(
+      service.cancelOrder(
+        'admin-1',
+        'order-1',
+        Role.ADMIN,
+        'too late',
+        'cancellation',
+        { allowPaidOrder: true },
+      ),
+    ).rejects.toThrow('Cannot cancel order in SHIPPED status');
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('aborts the override if the order ships in the gap before the guarded write', async () => {
+    const { service, prisma } = build(
+      { paymentStatus: PaymentStatus.SUCCESS },
+      0,
+    );
+
+    await expect(
+      service.cancelOrder(
+        'admin-1',
+        'order-1',
+        Role.ADMIN,
+        'reason',
+        'cancellation',
+        { allowPaidOrder: true },
+      ),
+    ).rejects.toThrow('moved to a status that cannot be cancelled');
+    expect(prisma.order.findUniqueOrThrow).not.toHaveBeenCalled();
+  });
+
   it('aborts if the payment gets confirmed in the gap between the read and the guarded write', async () => {
     // Initial read still sees PENDING (so it passes the first guard), but
     // the guarded updateMany matches zero rows - as it would if a separate

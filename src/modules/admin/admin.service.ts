@@ -51,6 +51,7 @@ import { AdminQueryPaymentsDto } from './dto/query-payments.dto';
 import { AdminQuerySettlementsDto } from './dto/query-settlements.dto';
 import { AdminQueryTicketsDto } from './dto/query-tickets.dto';
 import { AdminUpdateOrderStatusDto } from './dto/admin-update-order-status.dto';
+import { AdminCancelOrderDto } from './dto/admin-cancel-order.dto';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -1723,10 +1724,82 @@ export class AdminService {
     };
   }
 
+  /**
+   * Cancel an order from the admin panel, including one that has been paid.
+   *
+   * Until this existed an admin had no correct way to cancel a paid order:
+   * - the self-service cancel refuses a confirmed payment (deliberately — it
+   *   guards Razorpay's ondismiss auto-cancel from restocking an order that
+   *   just succeeded);
+   * - recordRefund() writes only the money fields, leaving the order live for
+   *   the seller to ship and its stock still committed;
+   * - and setting CANCELLED through adminUpdateOrderStatus() changed the
+   *   status without ever restoring stock — the silent one.
+   *
+   * So this routes through OrdersService.cancelOrder, which already restores
+   * stock correctly, stamps cancelledAt/cancellationReason, re-checks the
+   * race inside its transaction and notifies the buyer. The only thing added
+   * here is the authority to do it to a paid order, plus the refund check
+   * below.
+   */
+  async adminCancelOrder(orderId: string, dto: AdminCancelOrderDto) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        buyerId: true,
+        paymentStatus: true,
+        refundedAt: true,
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    // Money first. Restoring stock and telling the buyer their order is gone
+    // while their payment sits unreturned — with nothing recorded about it —
+    // is how the ledger and the warehouse drift apart. The API cannot confirm
+    // a refund really happened (it may be issued from the Razorpay dashboard,
+    // or a UPI reversal), so it requires the admin to say so explicitly
+    // rather than inferring it. An order with refundedAt already set has been
+    // through recordRefund() and needs no second confirmation.
+    const isPaid =
+      order.paymentStatus === PaymentStatus.SUCCESS ||
+      order.paymentStatus === PaymentStatus.PARTIAL;
+    if (isPaid && !order.refundedAt && !dto.refundHandled) {
+      throw new BadRequestException(
+        'This order has been paid and no refund is recorded against it. Record the refund first, or confirm you have handled it, before cancelling.',
+      );
+    }
+
+    return this.ordersService.cancelOrder(
+      order.buyerId,
+      orderId,
+      Role.ADMIN,
+      dto.reason,
+      'cancellation',
+      { allowPaidOrder: true },
+    );
+  }
+
   async adminUpdateOrderStatus(
     orderId: string,
     dto: AdminUpdateOrderStatusDto,
   ) {
+    // CANCELLED is not a status you can simply set. Cancelling has to restore
+    // stock, stamp cancelledAt/cancellationReason and notify the buyer, and
+    // none of that happens here — this method writes orderStatus and (for
+    // READY_TO_SHIP) pushes to Shiprocket, nothing more. Setting CANCELLED
+    // through this path therefore looked like it worked while silently
+    // destroying the order's stock: the units were never given back, and the
+    // order carried no record of why it was cancelled.
+    //
+    // Routed rather than silently redirected: cancelling needs a reason and,
+    // for a paid order, a refund confirmation, and neither is in this DTO.
+    if (dto.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException(
+        'Use the cancel action to cancel an order — it restores stock and records the reason. Setting the status to CANCELLED here would leave the stock committed.',
+      );
+    }
+
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
