@@ -39,6 +39,7 @@ import { AdminQuerySettlementsDto } from './dto/query-settlements.dto';
 import { AdminQueryTicketsDto } from './dto/query-tickets.dto';
 import { AdminUpdateOrderStatusDto } from './dto/admin-update-order-status.dto';
 import { AdminCancelOrderDto } from './dto/admin-cancel-order.dto';
+import { AdminQueryAbandonedCheckoutsDto } from './dto/query-abandoned-checkouts.dto';
 import { ClassifyOrderDto } from './dto/classify-order.dto';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
@@ -325,6 +326,21 @@ export class AdminController {
   // ═══════════════════════════════════════════════════
   // ORDER MANAGEMENT
   // ═══════════════════════════════════════════════════
+
+  // A top-level path on purpose, not `orders/abandoned`: `orders/:id` is
+  // declared below with a UUID pipe, and a static segment placed after it is
+  // swallowed and answered 400 before it is ever matched.
+  @Get('abandoned-checkouts')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Checkouts that reached payment and never completed it, one row per checkout, with lost-revenue totals',
+  })
+  @ApiResponse({ status: 200, description: 'Paginated abandoned checkouts with summary' })
+  async getAbandonedCheckouts(@Query() query: AdminQueryAbandonedCheckoutsDto) {
+    const data = await this.adminService.getAbandonedCheckouts(query);
+    return { message: 'Abandoned checkouts retrieved successfully', data };
+  }
 
   @Get('orders')
   @HttpCode(HttpStatus.OK)

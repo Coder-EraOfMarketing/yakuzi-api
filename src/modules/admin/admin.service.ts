@@ -52,6 +52,14 @@ import { AdminQuerySettlementsDto } from './dto/query-settlements.dto';
 import { AdminQueryTicketsDto } from './dto/query-tickets.dto';
 import { AdminUpdateOrderStatusDto } from './dto/admin-update-order-status.dto';
 import { AdminCancelOrderDto } from './dto/admin-cancel-order.dto';
+import { AdminQueryAbandonedCheckoutsDto } from './dto/query-abandoned-checkouts.dto';
+import {
+  ABANDONED_ROW_CAP,
+  ABANDONMENT_TRACKING_START,
+  boughtLater,
+  groupAbandonedCheckouts,
+  summariseAbandoned,
+} from './abandoned-checkouts.util';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -1499,6 +1507,158 @@ export class AdminService {
     });
 
     return { data: rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * Checkouts that reached payment and never completed it, one row per
+   * checkout (not per order — a basket spanning three sellers is three Orders
+   * sharing a checkoutGroupId).
+   *
+   * An order belongs here when sellersNotifiedAt is null and it is unpaid:
+   * Razorpay-intent checkouts leave that null until payment is confirmed
+   * (CreateOrderDto.deferSellerNotification) and every other method stamps it
+   * at checkout, so COD and bank transfer — which also sit at
+   * paymentStatus PENDING — can never be mistaken for abandonments. The same
+   * predicate CheckoutAbandonmentSweepService uses to decide what to cancel.
+   *
+   * Grouped in memory rather than in SQL: the filter and the test-order
+   * exclusion are Prisma where-clauses, and re-expressing them as a raw
+   * GROUP BY would fork the definition of "test order". The rows pulled are
+   * narrow (no joins) and capped; `truncated` says when the cap bit.
+   */
+  async getAbandonedCheckouts(query: AdminQueryAbandonedCheckoutsDto) {
+    const { state = 'abandoned', search, dateFrom, dateTo, page = 1, limit = 20 } = query;
+
+    // Never earlier than the tracking start: sellersNotifiedAt has no backfill,
+    // so older orders are all null and would all look abandoned.
+    const createdAt: Prisma.DateTimeFilter = { gte: ABANDONMENT_TRACKING_START };
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      if (!isNaN(from.getTime()) && from > ABANDONMENT_TRACKING_START) createdAt.gte = from;
+    }
+    if (dateTo) {
+      // A bare date means "through the end of that day", not its first instant.
+      const to = new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo) ? `${dateTo}T23:59:59.999Z` : dateTo);
+      if (!isNaN(to.getTime())) createdAt.lte = to;
+    }
+
+    const and: Prisma.OrderWhereInput[] = [];
+    if (query.includeTestOrders !== 'true') and.push(await this.notTestOrderWhere());
+    if (search) {
+      and.push({
+        OR: [
+          { buyer: { phone: { contains: search, mode: 'insensitive' } } },
+          { buyer: { email: { contains: search, mode: 'insensitive' } } },
+          { address: { name: { contains: search, mode: 'insensitive' } } },
+          { buyer: { buyerProfile: { legalName: { contains: search, mode: 'insensitive' } } } },
+        ],
+      });
+    }
+
+    const where: Prisma.OrderWhereInput = {
+      sellersNotifiedAt: null,
+      orderStatus: { in: [OrderStatus.PLACED, OrderStatus.CANCELLED] },
+      paymentStatus: { notIn: [PaymentStatus.SUCCESS, PaymentStatus.PARTIAL] },
+      createdAt,
+      ...(and.length ? { AND: and } : {}),
+    };
+
+    const orderRows = await this.prisma.order.findMany({
+      where,
+      select: {
+        id: true,
+        buyerId: true,
+        checkoutGroupId: true,
+        orderStatus: true,
+        totalAmount: true,
+        createdAt: true,
+        cancelledAt: true,
+        cancellationReason: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: ABANDONED_ROW_CAP,
+    });
+
+    const groups = groupAbandonedCheckouts(
+      orderRows.map((r) => ({ ...r, totalAmount: Number(r.totalAmount) })),
+    );
+    // Summarised BEFORE the state filter so the header always shows both
+    // figures whichever tab is selected.
+    const summary = summariseAbandoned(groups);
+    const matching = state === 'all' ? groups : groups.filter((g) => g.state === state);
+    const total = matching.length;
+    const pageGroups = matching.slice((page - 1) * limit, page * limit);
+
+    const orderIds = pageGroups.flatMap((g) => g.orderIds);
+    const buyerIds = [...new Set(pageGroups.map((g) => g.buyerId))];
+
+    const [details, purchases] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { id: { in: orderIds } },
+        select: {
+          id: true,
+          buyer: {
+            select: {
+              id: true,
+              phone: true,
+              email: true,
+              buyerProfile: { select: { legalName: true } },
+            },
+          },
+          address: { select: { name: true, phone: true, city: true, state: true } },
+          items: {
+            select: {
+              quantity: true,
+              totalPrice: true,
+              sellerOffer: { select: { name: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.order.findMany({
+        where: {
+          buyerId: { in: buyerIds },
+          sellersNotifiedAt: { not: null },
+          orderStatus: { not: OrderStatus.CANCELLED },
+        },
+        select: { buyerId: true, createdAt: true },
+      }),
+    ]);
+    const detailById = new Map(details.map((d) => [d.id, d]));
+
+    const data = pageGroups.map((g) => {
+      const parts = g.orderIds.map((id) => detailById.get(id)).filter((d) => !!d);
+      const first = parts[0];
+      return {
+        id: g.key,
+        state: g.state,
+        startedAt: g.startedAt,
+        cancelledAt: g.cancelledAt,
+        cancellationReason: g.cancellationReason,
+        totalAmount: g.totalAmount,
+        orderIds: g.orderIds,
+        buyer: first?.buyer ?? null,
+        address: first?.address ?? null,
+        items: parts.flatMap((p) =>
+          (p?.items ?? []).map((i) => ({
+            name: i.sellerOffer?.name ?? 'Item',
+            quantity: i.quantity,
+            totalPrice: Number(i.totalPrice),
+          })),
+        ),
+        boughtLater: boughtLater(g, purchases),
+      };
+    });
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      summary,
+      truncated: orderRows.length >= ABANDONED_ROW_CAP,
+    };
   }
 
   /**

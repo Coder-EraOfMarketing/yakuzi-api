@@ -125,6 +125,12 @@ const RULES: RouteRule[] = [
   // even though it is reached from the ordinary Orders screen.
   { pattern: /^\/(admin\/)?payments\/[^/]+\/(confirm|reject)$/, tab: 'orders', writeLevel: 'full' },
   { pattern: /^\/admin\/payments(\/|$)/, tab: 'orders' },
+  // Read-only list of unpaid checkouts. Lives under the Orders grant rather
+  // than a tab of its own: it is order data carrying buyer phone numbers, and
+  // a new TabKey would have to be granted to every existing restricted admin
+  // before they could see it. WITHOUT this line the route is unmapped and
+  // every non-super admin is answered 403 (see the fallback below).
+  { pattern: /^\/admin\/abandoned-checkouts$/, tab: 'orders' },
   { pattern: /^\/admin\/orders(\/|$)/, tab: 'orders' },
   { pattern: /^\/orders(\/|$)/, tab: 'orders' },
   { pattern: /^\/custom-orders(\/|$)/, tab: 'orders' },
