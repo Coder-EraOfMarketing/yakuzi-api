@@ -60,6 +60,7 @@ import {
   groupAbandonedCheckouts,
   summariseAbandoned,
 } from './abandoned-checkouts.util';
+import { derivePaymentState } from './payment-state.util';
 import { AdminUpdateTicketStatusDto } from './dto/admin-update-ticket-status.dto';
 import { AdminReplyTicketDto } from './dto/admin-reply-ticket.dto';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -474,6 +475,7 @@ export class AdminService {
                 totalAmount: true,
                 orderStatus: true,
                 paymentStatus: true,
+                sellersNotifiedAt: true,
                 createdAt: true,
                 buyer: { select: { id: true, phone: true } },
               },
@@ -516,7 +518,10 @@ export class AdminService {
         pendingPayments: pendingPayments ?? 0,
         pendingSettlements: pendingSettlements ?? 0,
         openTickets: openTickets ?? 0,
-        recentOrders: recentOrders || [],
+        recentOrders: (recentOrders || []).map((o) => ({
+          ...o,
+          paymentState: derivePaymentState(o),
+        })),
         referralCount: Number((referralStats as any)?._count?.id ?? 0),
         referralRevenue: Number((referralStats as any)?._sum?.totalAmount ?? 0),
         pendingProductRequests: pendingProductRequests ?? 0,
@@ -1462,6 +1467,7 @@ export class AdminService {
           totalAmount: true,
           orderStatus: true,
           paymentStatus: true,
+          sellersNotifiedAt: true,
           createdAt: true,
           updatedAt: true,
           buyer: {
@@ -1503,7 +1509,12 @@ export class AdminService {
     // making someone guess which rule caught it.
     const rows = data.map((order) => {
       const { isTest, classification } = this.classify(order, testPhones, overrides);
-      return { ...order, isTestOrder: isTest, classification };
+      return {
+        ...order,
+        paymentState: derivePaymentState(order),
+        isTestOrder: isTest,
+        classification,
+      };
     });
 
     return { data: rows, total, page, limit, totalPages: Math.ceil(total / limit) };
@@ -1880,6 +1891,7 @@ export class AdminService {
 
     return {
       ...order,
+      paymentState: derivePaymentState(order),
       items,
     };
   }
