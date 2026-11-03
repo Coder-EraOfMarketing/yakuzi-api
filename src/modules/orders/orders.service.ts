@@ -1508,7 +1508,12 @@ export class OrdersService {
       DELIVERED: ['RETURNED', 'CANCELLED'],
     };
 
-    const allowed = validTransitions[order.orderStatus] ?? [];
+    const allowed = [...(validTransitions[order.orderStatus] ?? [])];
+    // Self-ship orders skip the courier stages (nothing can track them), so
+    // Accepted goes straight to Delivered. See submitSelfShipTracking.
+    if (isSelfShipOrder(order) && order.orderStatus === OrderStatus.ACCEPTED) {
+      allowed.push(OrderStatus.DELIVERED);
+    }
     if (!allowed.includes(dto.status)) {
       throw new BadRequestException(
         `Cannot transition from ${order.orderStatus} to ${dto.status}. Allowed: ${allowed.join(', ') || 'none'}`,
@@ -1897,27 +1902,26 @@ export class OrdersService {
     });
 
     if (isFirstSubmit) {
-      // Guarded on the not-yet-shipped statuses so a concurrent admin change
-      // (e.g. a cancellation between the read above and this write) always
-      // wins — mirrors updateShippingDetails' auto-accept updateMany.
-      const advanced = await this.prisma.order.updateMany({
-        where: {
-          id: orderId,
-          orderStatus: {
-            in: [
-              OrderStatus.PLACED,
-              OrderStatus.ACCEPTED,
-              OrderStatus.PAYMENT_RECEIVED,
-              OrderStatus.READY_TO_SHIP,
-              OrderStatus.DISPATCHED_FROM_SELLER,
-              OrderStatus.RECEIVED_AT_WAREHOUSE,
-            ],
-          },
-        },
-        data: { orderStatus: OrderStatus.SHIPPED },
+      // The tracking link IS the self-ship seller's acceptance, exactly as
+      // submitting shipping details is for Shiprocket orders: PLACED ->
+      // ACCEPTED, and no further. Nothing can follow a self-shipped parcel,
+      // so the later stages (ready / dispatched / shipped / out for delivery)
+      // are skipped for these orders and an admin or the seller marks it
+      // DELIVERED straight from ACCEPTED. Guarded updateMany so a concurrent
+      // cancellation always wins.
+      const accepted = await this.prisma.order.updateMany({
+        where: { id: orderId, orderStatus: OrderStatus.PLACED },
+        data: { orderStatus: OrderStatus.ACCEPTED },
       });
+      const lostRace = order.orderStatus === OrderStatus.PLACED && accepted.count === 0;
 
-      if (advanced.count > 0) {
+      if (!lostRace) {
+        if (accepted.count > 0) {
+          this.notifyBuyerAccepted(order.buyerId, order.id);
+        }
+        // The status no longer says "shipped", but the parcel is on its way and
+        // this is the only moment the buyer is handed the courier link (email,
+        // SMS and bell). Dropping it would leave them with nothing to track.
         await this.notifyBuyerOfStatusChange(
           { id: order.id, buyerId: order.buyerId, buyer: order.buyer },
           OrderStatus.SHIPPED,

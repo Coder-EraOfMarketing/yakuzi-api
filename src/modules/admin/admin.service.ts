@@ -1468,6 +1468,7 @@ export class AdminService {
           orderStatus: true,
           paymentStatus: true,
           sellersNotifiedAt: true,
+          fulfillmentMode: true,
           createdAt: true,
           updatedAt: true,
           buyer: {
