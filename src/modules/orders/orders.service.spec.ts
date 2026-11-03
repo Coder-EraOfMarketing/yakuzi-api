@@ -1456,7 +1456,10 @@ describe('OrdersService.submitSelfShipTracking', () => {
     const notifySpy = jest
       .spyOn(service, 'notifyBuyerOfStatusChange')
       .mockResolvedValue(undefined);
-    return { service, prisma, notifySpy };
+    const acceptedSpy = jest
+      .spyOn(service, 'notifyBuyerAccepted')
+      .mockReturnValue(undefined as never);
+    return { service, prisma, notifySpy, acceptedSpy };
   };
 
   const trackingDto = { trackingUrl: 'https://courier.example/track/123' };
@@ -1496,8 +1499,8 @@ describe('OrdersService.submitSelfShipTracking', () => {
     ).rejects.toThrow('can no longer be shipped');
   });
 
-  it('first submit saves the link, stamps shippedAt, advances to SHIPPED and notifies the buyer', async () => {
-    const { service, prisma, notifySpy } = buildSubmit();
+  it('first submit saves the link, stamps shippedAt, accepts the order (and only accepts it) and still sends the buyer the courier link', async () => {
+    const { service, prisma, notifySpy, acceptedSpy } = buildSubmit();
 
     await service.submitSelfShipTracking('user-1', 'order-1', {
       ...trackingDto,
@@ -1509,14 +1512,30 @@ describe('OrdersService.submitSelfShipTracking', () => {
     expect(updateData.courierName).toBe('BlueDart');
     expect(updateData.shippedAt).toBeInstanceOf(Date);
 
-    expect(prisma.order.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'order-1' }),
-        data: { orderStatus: OrderStatus.SHIPPED },
-      }),
-    );
+    expect(prisma.order.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      where: { id: 'order-1', orderStatus: OrderStatus.PLACED },
+      data: { orderStatus: OrderStatus.ACCEPTED },
+    });
+    expect(acceptedSpy).toHaveBeenCalledWith('buyer-1', 'order-1');
+    // The "shipped" notice is what carries the tracking link to the buyer.
     expect(notifySpy).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'order-1', buyerId: 'buyer-1' }),
+      OrderStatus.SHIPPED,
+    );
+  });
+
+  it('an order already past PLACED is not re-accepted or moved, but the buyer still gets the link', async () => {
+    const { service, prisma, notifySpy, acceptedSpy } = buildSubmit({
+      orderStatus: OrderStatus.ACCEPTED,
+    });
+    prisma.order.updateMany.mockResolvedValue({ count: 0 });
+
+    await service.submitSelfShipTracking('user-1', 'order-1', trackingDto);
+
+    expect(acceptedSpy).not.toHaveBeenCalled();
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'order-1' }),
       OrderStatus.SHIPPED,
     );
   });
@@ -1830,5 +1849,67 @@ describe('OrdersService.cancelOrder — reason and buyer notice', () => {
       service.cancelOrder('admin-1', ORDER_ID, 'ADMIN', 'whatever'),
     ).resolves.toBeDefined();
     await flush();
+  });
+});
+
+describe('OrdersService.updateOrderStatus — self-ship skips the courier stages', () => {
+  const build = (fulfillmentMode: string, orderStatus: OrderStatus) => {
+    const prisma = {
+      sellerProfile: { findUnique: jest.fn().mockResolvedValue({ id: 'seller-1' }) },
+      orderItem: { findMany: jest.fn().mockResolvedValue([{ id: 'item-1' }]) },
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'order-1',
+          buyerId: 'buyer-1',
+          fulfillmentMode,
+          orderStatus,
+          paymentStatus: PaymentStatus.SUCCESS,
+          buyer: { email: null, phone: null },
+        }),
+        update: jest.fn().mockResolvedValue({ id: 'order-1', items: [] }),
+      },
+    };
+    const service = new OrdersService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      sellerEmailsStub as never,
+      adminAlertsStub as never,
+    );
+    jest.spyOn(service, 'notifyBuyerOfStatusChange').mockResolvedValue(undefined);
+    jest.spyOn(service, 'createSettlementsForDeliveredOrder').mockResolvedValue(undefined);
+    return { service, prisma };
+  };
+
+  it('lets a self-ship order go from ACCEPTED straight to DELIVERED', async () => {
+    const { service, prisma } = build('self_ship', OrderStatus.ACCEPTED);
+
+    await service.updateOrderStatus('user-1', 'order-1', { status: OrderStatus.DELIVERED } as never);
+
+    expect(prisma.order.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { orderStatus: OrderStatus.DELIVERED } }),
+    );
+  });
+
+  it('does not open that shortcut for a Shiprocket order', async () => {
+    const { service, prisma } = build('shiprocket', OrderStatus.ACCEPTED);
+
+    await expect(
+      service.updateOrderStatus('user-1', 'order-1', { status: OrderStatus.DELIVERED } as never),
+    ).rejects.toThrow('Cannot transition from ACCEPTED to DELIVERED');
+    expect(prisma.order.update).not.toHaveBeenCalled();
+  });
+
+  it('still refuses to skip from PLACED, even for self-ship', async () => {
+    const { service } = build('self_ship', OrderStatus.PLACED);
+
+    await expect(
+      service.updateOrderStatus('user-1', 'order-1', { status: OrderStatus.DELIVERED } as never),
+    ).rejects.toThrow('Cannot transition from PLACED to DELIVERED');
   });
 });
