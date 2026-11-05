@@ -24,6 +24,8 @@ import { RegisterBuyerDto } from './dto/register-buyer.dto';
 import { LoginPasswordDto } from './dto/login-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
+import { AppleLoginDto } from './dto/apple-login.dto';
+import { FacebookLoginDto } from './dto/facebook-login.dto';
 import { WebAnalyticsService } from '../web-analytics/web-analytics.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -187,6 +189,54 @@ export class AuthController {
       visitorId,
       userId: result.user.id,
       method: 'google',
+      isSignup: result.isNewUser,
+    });
+    return result;
+  }
+
+  @Post('apple')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({ summary: 'Sign in with an Apple identity token (Buyers only)' })
+  @ApiResponse({ status: 200, description: 'Login successful, tokens returned' })
+  @ApiResponse({ status: 401, description: 'Apple rejected the token' })
+  @ApiResponse({
+    status: 503,
+    description: 'APPLE_CLIENT_ID is not configured on the server',
+  })
+  async loginWithApple(
+    @Body() dto: AppleLoginDto,
+    @Headers('x-visitor-id') visitorId?: string,
+  ) {
+    const result = await this.authService.loginWithApple(dto.idToken);
+    void this.webAnalytics.identify({
+      visitorId,
+      userId: result.user.id,
+      method: 'apple',
+      isSignup: result.isNewUser,
+    });
+    return result;
+  }
+
+  @Post('facebook')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({ summary: 'Sign in with a Facebook access token (Buyers only)' })
+  @ApiResponse({ status: 200, description: 'Login successful, tokens returned' })
+  @ApiResponse({ status: 401, description: 'Facebook rejected the token' })
+  @ApiResponse({
+    status: 503,
+    description: 'FACEBOOK_APP_ID / FACEBOOK_APP_SECRET are not configured on the server',
+  })
+  async loginWithFacebook(
+    @Body() dto: FacebookLoginDto,
+    @Headers('x-visitor-id') visitorId?: string,
+  ) {
+    const result = await this.authService.loginWithFacebook(dto.accessToken);
+    void this.webAnalytics.identify({
+      visitorId,
+      userId: result.user.id,
+      method: 'facebook',
       isSignup: result.isNewUser,
     });
     return result;
