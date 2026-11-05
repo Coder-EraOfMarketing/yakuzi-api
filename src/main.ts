@@ -44,6 +44,9 @@ async function bootstrap() {
     }
 
     if (req.method === 'OPTIONS') {
+      // Without this browsers re-send the preflight about every 5 seconds,
+      // which doubles the calls once the site talks to the API directly.
+      res.setHeader('Access-Control-Max-Age', '7200');
       return res.status(204).end();
     }
 
