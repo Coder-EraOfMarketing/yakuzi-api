@@ -20,6 +20,12 @@ import { parseAdminGrants } from '../../common/admin-access';
 import { REDIS_CLIENT } from '../../config/redis.config';
 import { Role, UserStatus } from '@prisma/client';
 import { OtpSmsService } from './services/otp-sms.service';
+import {
+  AppleJwks,
+  VerifiedSocialIdentity,
+  verifyAppleIdentityToken,
+  verifyFacebookAccessToken,
+} from './social-token.util';
 import { BuyerEmailsService } from '../mail/buyer-emails.service';
 import { MailService } from '../mail/mail.service';
 import { RegisterBuyerDto } from './dto/register-buyer.dto';
@@ -794,6 +800,29 @@ export class AuthService {
       );
     }
 
+    return this.signInBuyerByVerifiedEmail({
+      email,
+      displayName: (claims.name || '').trim(),
+      provider: 'Google',
+    });
+  }
+
+  /**
+   * The one place a social sign-in becomes a session, shared by Google, Apple
+   * and Facebook so the rules cannot drift apart.
+   *
+   * The caller has ALREADY proved the provider vouches for this email. An
+   * account that exists with this email signs in rather than being duplicated;
+   * sellers and admins are deliberately excluded (this is the buyer storefront,
+   * and their accounts carry other privileges); blocked accounts stay blocked.
+   */
+  private async signInBuyerByVerifiedEmail(params: {
+    email: string;
+    displayName: string;
+    provider: 'Google' | 'Apple' | 'Facebook';
+  }): Promise<AuthResponse> {
+    const { email, displayName, provider } = params;
+
     let user = await this.prisma.user.findUnique({ where: { email } });
     let isNewUser = false;
 
@@ -811,8 +840,6 @@ export class AuthService {
       }
     } else {
       isNewUser = true;
-      const displayName = (claims.name || '').trim();
-
       user = await this.prisma.user.create({
         data: {
           email,
@@ -827,7 +854,7 @@ export class AuthService {
         data: { userId: user.id, legalName: displayName },
       });
 
-      this.logger.log(`Created buyer ${user.id} from a Google sign-in`);
+      this.logger.log(`Created buyer ${user.id} from a ${provider} sign-in`);
     }
 
     // Existing accounts created before this path may have no profile yet.
@@ -836,7 +863,7 @@ export class AuthService {
     });
     if (!profile) {
       await this.prisma.buyerProfile.create({
-        data: { userId: user.id, legalName: (claims.name || '').trim() },
+        data: { userId: user.id, legalName: displayName },
       });
     }
 
@@ -855,6 +882,66 @@ export class AuthService {
       },
       isNewUser,
     };
+  }
+
+  // ─── APPLE SIGN-IN ─────────────────────────────────
+
+  private readonly appleJwks = new AppleJwks();
+
+  /**
+   * Signs a buyer in with the identity token Sign in with Apple returns in the
+   * browser. Inert until APPLE_CLIENT_ID (the Services ID) is set, exactly like
+   * Google: with nothing to check the audience against, it refuses.
+   */
+  async loginWithApple(idToken: string): Promise<AuthResponse> {
+    const clientId = this.configService.get<string>('APPLE_CLIENT_ID');
+    if (!clientId) {
+      this.logger.warn('Apple sign-in was attempted but APPLE_CLIENT_ID is not configured');
+      throw new ServiceUnavailableException('Apple sign-in is not available right now.');
+    }
+
+    let identity: VerifiedSocialIdentity;
+    try {
+      identity = await verifyAppleIdentityToken(idToken, clientId, this.appleJwks);
+    } catch (e: any) {
+      this.logger.warn(`Apple identity token rejected: ${e?.message}`);
+      throw new UnauthorizedException('Apple sign-in failed. Please try again.');
+    }
+
+    return this.signInBuyerByVerifiedEmail({
+      email: identity.email,
+      displayName: identity.displayName,
+      provider: 'Apple',
+    });
+  }
+
+  // ─── FACEBOOK SIGN-IN ──────────────────────────────
+
+  /**
+   * Signs a buyer in with a Facebook user access token from the browser. Inert
+   * until FACEBOOK_APP_ID and FACEBOOK_APP_SECRET are both set.
+   */
+  async loginWithFacebook(accessToken: string): Promise<AuthResponse> {
+    const appId = this.configService.get<string>('FACEBOOK_APP_ID');
+    const appSecret = this.configService.get<string>('FACEBOOK_APP_SECRET');
+    if (!appId || !appSecret) {
+      this.logger.warn('Facebook sign-in was attempted but FACEBOOK_APP_ID/SECRET are not configured');
+      throw new ServiceUnavailableException('Facebook sign-in is not available right now.');
+    }
+
+    let identity: VerifiedSocialIdentity;
+    try {
+      identity = await verifyFacebookAccessToken(accessToken, appId, appSecret);
+    } catch (e: any) {
+      this.logger.warn(`Facebook access token rejected: ${e?.message}`);
+      throw new UnauthorizedException('Facebook sign-in failed. Please try again.');
+    }
+
+    return this.signInBuyerByVerifiedEmail({
+      email: identity.email,
+      displayName: identity.displayName,
+      provider: 'Facebook',
+    });
   }
 
   // ─── GET CURRENT USER (ME) ─────────────────────────
